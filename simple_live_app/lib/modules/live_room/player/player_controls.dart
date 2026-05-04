@@ -820,44 +820,49 @@ void showFollowUser(LiveRoomController controller) {
     width: 400,
     useSystem: true,
     child: Obx(
-      () => Stack(
-        children: [
-          RefreshIndicator(
-            onRefresh: FollowService.instance.loadData,
-            child: ListView.builder(
-              itemCount: FollowService.instance.liveList.length,
-              itemBuilder: (_, i) {
-                var item = FollowService.instance.liveList[i];
-                return Obx(
-                  () => FollowUserItem(
-                    item: item,
-                    playing: controller.rxSite.value.id == item.siteId &&
-                        controller.rxRoomId.value == item.roomId,
-                    onTap: () {
-                      Utils.hideRightDialog();
-                      controller.resetRoom(
-                        Sites.allSites[item.siteId]!,
-                        item.roomId,
-                      );
-                    },
-                  ),
-                );
-              },
-            ),
-          ),
-          if (Platform.isLinux || Platform.isWindows || Platform.isMacOS)
-            Positioned(
-              right: 12,
-              bottom: 12,
-              child: Obx(
-                () => DesktopRefreshButton(
-                  refreshing: FollowService.instance.updating.value,
-                  onPressed: FollowService.instance.loadData,
-                ),
+      () {
+        final followList = FollowService.instance.getLiveRoomFollowList(
+          AppSettingsController.instance.liveRoomFollowSortMethod.value,
+        );
+        return Stack(
+          children: [
+            RefreshIndicator(
+              onRefresh: FollowService.instance.loadData,
+              child: ListView.builder(
+                itemCount: followList.length,
+                itemBuilder: (_, i) {
+                  var item = followList[i];
+                  return Obx(
+                    () => FollowUserItem(
+                      item: item,
+                      playing: controller.rxSite.value.id == item.siteId &&
+                          controller.rxRoomId.value == item.roomId,
+                      onTap: () {
+                        Utils.hideRightDialog();
+                        controller.resetRoom(
+                          Sites.allSites[item.siteId]!,
+                          item.roomId,
+                        );
+                      },
+                    ),
+                  );
+                },
               ),
             ),
-        ],
-      ),
+            if (Platform.isLinux || Platform.isWindows || Platform.isMacOS)
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: Obx(
+                  () => DesktopRefreshButton(
+                    refreshing: FollowService.instance.updating.value,
+                    onPressed: FollowService.instance.loadData,
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     ),
   );
 }

@@ -7,6 +7,7 @@ import 'package:lottie/lottie.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
+import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
@@ -26,6 +27,11 @@ import 'package:simple_live_core/simple_live_core.dart';
 
 class LiveRoomPage extends GetView<LiveRoomController> {
   const LiveRoomPage({super.key});
+
+  static const Map<LiveRoomFollowSortMethod, String> _followSortMethodMap = {
+    LiveRoomFollowSortMethod.watchDuration: "观看时长",
+    LiveRoomFollowSortMethod.recentEnter: "最近进入",
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -700,6 +706,15 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                 onTap: controller.showAutoExitSheet,
               ),
               AppStyle.divider,
+              Obx(
+                () => SettingsAction(
+                  title: "关注排序",
+                  value: _followSortMethodMap[AppSettingsController
+                      .instance.liveRoomFollowSortMethod.value],
+                  onTap: showLiveRoomFollowSortDialog,
+                ),
+              ),
+              AppStyle.divider,
               SettingsAction(
                 title: "画面尺寸",
                 onTap: controller.showPlayerSettingsSheet,
@@ -713,44 +728,60 @@ class LiveRoomPage extends GetView<LiveRoomController> {
 
   Widget buildFollowList() {
     return Obx(
-      () => Stack(
-        children: [
-          RefreshIndicator(
-            onRefresh: FollowService.instance.loadData,
-            child: ListView.builder(
-              itemCount: FollowService.instance.liveList.length,
-              itemBuilder: (_, i) {
-                var item = FollowService.instance.liveList[i];
-                return Obx(
-                  () => FollowUserItem(
-                    item: item,
-                    playing: controller.rxSite.value.id == item.siteId &&
-                        controller.rxRoomId.value == item.roomId,
-                    onTap: () {
-                      controller.resetRoom(
-                        Sites.allSites[item.siteId]!,
-                        item.roomId,
-                      );
-                    },
-                  ),
-                );
-              },
-            ),
-          ),
-          if (Platform.isLinux || Platform.isWindows || Platform.isMacOS)
-            Positioned(
-              right: 12,
-              bottom: 12,
-              child: Obx(
-                () => DesktopRefreshButton(
-                  refreshing: FollowService.instance.updating.value,
-                  onPressed: FollowService.instance.loadData,
-                ),
+      () {
+        final followList = FollowService.instance.getLiveRoomFollowList(
+          AppSettingsController.instance.liveRoomFollowSortMethod.value,
+        );
+        return Stack(
+          children: [
+            RefreshIndicator(
+              onRefresh: FollowService.instance.loadData,
+              child: ListView.builder(
+                itemCount: followList.length,
+                itemBuilder: (_, i) {
+                  var item = followList[i];
+                  return Obx(
+                    () => FollowUserItem(
+                      item: item,
+                      playing: controller.rxSite.value.id == item.siteId &&
+                          controller.rxRoomId.value == item.roomId,
+                      onTap: () {
+                        controller.resetRoom(
+                          Sites.allSites[item.siteId]!,
+                          item.roomId,
+                        );
+                      },
+                    ),
+                  );
+                },
               ),
             ),
-        ],
-      ),
+            if (Platform.isLinux || Platform.isWindows || Platform.isMacOS)
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: Obx(
+                  () => DesktopRefreshButton(
+                    refreshing: FollowService.instance.updating.value,
+                    onPressed: FollowService.instance.loadData,
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
+  }
+
+  Future<void> showLiveRoomFollowSortDialog() async {
+    var res = await Utils.showMapOptionDialog(
+      _followSortMethodMap,
+      AppSettingsController.instance.liveRoomFollowSortMethod.value,
+      title: "关注排序",
+    );
+    if (res != null) {
+      AppSettingsController.instance.setLiveRoomFollowSortMethod(res);
+    }
   }
 
   List<Widget> buildAppbarActions(BuildContext context) {

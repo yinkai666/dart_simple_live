@@ -207,6 +207,9 @@ class LocalStorageService extends GetxService {
   /// 关注列表排序方法
   static const String kFollowSortMethod = "FollowSortMethod";
 
+  /// 直播间关注列表排序方法
+  static const String kLiveRoomFollowSortMethod = "LiveRoomFollowSortMethod";
+
   /// 关注列表样式
   static const String kFollowStyleNotGrid = "FollowStyleNotGrid";
 

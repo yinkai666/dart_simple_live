@@ -66,8 +66,26 @@ extension SortMethodStore on SortMethod {
   static SortMethod fromStore(String? v) {
     if (v == null) return SortMethod.watchDuration;
     return SortMethod.values.firstWhere(
-          (e) => e.name == v,
+      (e) => e.name == v,
       orElse: () => SortMethod.watchDuration,
+    );
+  }
+}
+
+// 直播间关注列表排序方法
+enum LiveRoomFollowSortMethod {
+  watchDuration,
+  recentEnter,
+}
+
+extension LiveRoomFollowSortMethodStore on LiveRoomFollowSortMethod {
+  String get storeValue => name;
+
+  static LiveRoomFollowSortMethod fromStore(String? v) {
+    if (v == null) return LiveRoomFollowSortMethod.watchDuration;
+    return LiveRoomFollowSortMethod.values.firstWhere(
+      (e) => e.name == v,
+      orElse: () => LiveRoomFollowSortMethod.watchDuration,
     );
   }
 }

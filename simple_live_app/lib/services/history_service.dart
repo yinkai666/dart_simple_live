@@ -55,10 +55,10 @@ class HistoryService extends GetxService {
   void _loadHistory(History history) {
     curLiveRoomHistory = DBService.instance.getHistory(history.id);
     // 首次观看则创建
-    if (curLiveRoomHistory == null) {
-      curLiveRoomHistory = history;
-      DBService.instance.addOrUpdateHistory(history);
-    }
+    curLiveRoomHistory ??= history;
+    curLiveRoomHistory!.updateTime = DateTime.now();
+    DBService.instance.addOrUpdateHistory(curLiveRoomHistory!);
+    EventBus.instance.emit(Constant.kUpdateFollow, curLiveRoomHistory);
     _oldWatchedDuration = curLiveRoomHistory!.duration;
   }
 

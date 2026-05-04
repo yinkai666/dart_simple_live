@@ -19,6 +19,7 @@ import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/app/utils/duration_2_str_utils.dart';
 import 'package:simple_live_app/app/utils/dynamic_sort.dart';
+import 'package:simple_live_app/app/utils/live_room_follow_sort.dart';
 import 'package:simple_live_app/app/utils/string_normalizer.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
@@ -458,6 +459,20 @@ class FollowService extends GetxService {
         followList, AppSettingsController.instance.followSortMethod.value);
     liveList.assignAll(followList.where((x) => x.liveStatus.value == 2));
     notLiveList.assignAll(followList.where((x) => x.liveStatus.value == 1));
+  }
+
+  List<FollowUser> getLiveRoomFollowList(
+    LiveRoomFollowSortMethod sortMethod,
+  ) {
+    final historiesById = {
+      for (final history in DBService.instance.getHistories())
+        history.id: history
+    };
+    return sortLiveRoomFollowUsers(
+      users: liveList,
+      method: sortMethod,
+      historiesById: historiesById,
+    );
   }
 
   void listSortByMethod(List<FollowUser> list, SortMethod sortMethod) {
