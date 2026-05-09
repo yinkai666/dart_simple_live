@@ -190,6 +190,11 @@ class AppSettingsController extends GetxController {
     followStyleNotGrid.value = LocalStorageService.instance
         .getValue(LocalStorageService.kFollowStyleNotGrid, true);
 
+    followInfoDisplayMode.value = FollowInfoDisplayModeStore.fromStore(
+        LocalStorageService.instance.getValue(
+            LocalStorageService.kFollowInfoDisplayMode,
+            FollowInfoDisplayMode.watchDuration.storeValue));
+
     hideOfflineFollow.value = LocalStorageService.instance
         .getValue(LocalStorageService.kHideOfflineFollow, false);
 
@@ -650,5 +655,14 @@ class AppSettingsController extends GetxController {
     hideOfflineFollow.value = e;
     LocalStorageService.instance
         .setValue(LocalStorageService.kHideOfflineFollow, e);
+  }
+
+  // 关注列表时长信息显示模式
+  var followInfoDisplayMode = FollowInfoDisplayMode.watchDuration.obs;
+
+  void setFollowInfoDisplayMode(FollowInfoDisplayMode e) {
+    followInfoDisplayMode.value = e;
+    LocalStorageService.instance
+        .setValue(LocalStorageService.kFollowInfoDisplayMode, e.storeValue);
   }
 }

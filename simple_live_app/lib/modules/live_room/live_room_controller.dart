@@ -926,6 +926,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
                     return Obx(
                       () => FollowUserItem(
                         item: item,
+                        showTag: false,
                         playing: rxSite.value.id == item.siteId &&
                             rxRoomId.value == item.roomId,
                         onTap: () {

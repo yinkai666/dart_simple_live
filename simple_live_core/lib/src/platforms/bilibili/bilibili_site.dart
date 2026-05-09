@@ -271,6 +271,7 @@ class BiliBiliSite implements LiveSite {
         buvid: buvid3,
         cookie: cookie,
       ),
+      showTime: roomInfo["room_info"]?["live_start_time"]?.toString(),
     );
   }
 

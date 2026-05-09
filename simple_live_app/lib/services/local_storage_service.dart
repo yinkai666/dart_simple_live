@@ -213,6 +213,9 @@ class LocalStorageService extends GetxService {
   /// 关注列表样式
   static const String kFollowStyleNotGrid = "FollowStyleNotGrid";
 
+  /// 关注列表时长信息显示模式
+  static const String kFollowInfoDisplayMode = "FollowInfoDisplayMode";
+
   /// 数据库版本
   static const String kHiveDbVer = "kHiveDbVer";
 

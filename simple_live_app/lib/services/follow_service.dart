@@ -436,6 +436,7 @@ class FollowService extends GetxService {
       item.cover.value = detail.status ? detail.cover : "";
       item.title.value = detail.title;
       item.online.value = detail.online;
+      item.liveStartTime.value = detail.status ? detail.showTime : null;
     } catch (e) {
       Log.logPrint(e);
     } finally {

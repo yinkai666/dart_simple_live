@@ -80,6 +80,9 @@ class FollowUser implements Mappable {
 
   Rx<int> online = 0.obs;
 
+  /// 开播时间戳（Unix 秒，字符串形式；非持久化，仅刷新关注状态时填入）
+  Rx<String?> liveStartTime = Rx<String?>(null);
+
   factory FollowUser.fromJson(Map<String, dynamic> json) => FollowUser(
         id: json['id'],
         roomId: json['roomId'],

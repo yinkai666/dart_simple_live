@@ -89,3 +89,22 @@ extension LiveRoomFollowSortMethodStore on LiveRoomFollowSortMethod {
     );
   }
 }
+
+// 关注列表上时长信息的显示模式
+enum FollowInfoDisplayMode {
+  watchDuration, // 只显示用户累计观看时长
+  liveDuration, // 只显示主播本次开播时长
+  both, // 同时显示两者
+}
+
+extension FollowInfoDisplayModeStore on FollowInfoDisplayMode {
+  String get storeValue => name;
+
+  static FollowInfoDisplayMode fromStore(String? v) {
+    if (v == null) return FollowInfoDisplayMode.watchDuration;
+    return FollowInfoDisplayMode.values.firstWhere(
+      (e) => e.name == v,
+      orElse: () => FollowInfoDisplayMode.watchDuration,
+    );
+  }
+}

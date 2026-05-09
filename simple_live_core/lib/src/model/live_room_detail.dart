@@ -40,6 +40,9 @@ class LiveRoomDetail {
   /// 链接
   final String url;
 
+  /// 开播时间戳（Unix 秒，字符串形式；未开播或平台不支持时为 null）
+  final String? showTime;
+
   LiveRoomDetail({
     required this.roomId,
     required this.title,
@@ -54,6 +57,7 @@ class LiveRoomDetail {
     this.danmakuData,
     required this.url,
     this.isRecord = false,
+    this.showTime,
   });
 
   LiveRoomDetail copyWith({
@@ -70,6 +74,7 @@ class LiveRoomDetail {
     dynamic danmakuData,
     String? url,
     bool? isRecord,
+    String? showTime,
   }) {
     return LiveRoomDetail(
       roomId: roomId ?? this.roomId,
@@ -85,6 +90,7 @@ class LiveRoomDetail {
       danmakuData: danmakuData ?? this.danmakuData,
       isRecord: isRecord ?? this.isRecord,
       url: url ?? this.url,
+      showTime: showTime ?? this.showTime,
     );
   }
 
@@ -112,6 +118,7 @@ class LiveRoomDetail {
       "danmakuData": danmakuData.toString(),
       "url": url,
       "isRecord": isRecord,
+      "showTime": showTime,
     });
   }
 }

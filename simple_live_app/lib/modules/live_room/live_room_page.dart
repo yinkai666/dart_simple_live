@@ -33,6 +33,12 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     LiveRoomFollowSortMethod.recentEnter: "最近进入",
   };
 
+  static const Map<FollowInfoDisplayMode, String> _followInfoDisplayModeMap = {
+    FollowInfoDisplayMode.watchDuration: "仅观看时长",
+    FollowInfoDisplayMode.liveDuration: "仅开播时长",
+    FollowInfoDisplayMode.both: "同时显示",
+  };
+
   @override
   Widget build(BuildContext context) {
     final page = Obx(
@@ -715,6 +721,15 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                 ),
               ),
               AppStyle.divider,
+              Obx(
+                () => SettingsAction(
+                  title: "关注时长显示",
+                  value: _followInfoDisplayModeMap[AppSettingsController
+                      .instance.followInfoDisplayMode.value],
+                  onTap: showFollowInfoDisplayModeDialog,
+                ),
+              ),
+              AppStyle.divider,
               SettingsAction(
                 title: "画面尺寸",
                 onTap: controller.showPlayerSettingsSheet,
@@ -743,6 +758,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                   return Obx(
                     () => FollowUserItem(
                       item: item,
+                      showTag: false,
                       playing: controller.rxSite.value.id == item.siteId &&
                           controller.rxRoomId.value == item.roomId,
                       onTap: () {
@@ -781,6 +797,17 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     );
     if (res != null) {
       AppSettingsController.instance.setLiveRoomFollowSortMethod(res);
+    }
+  }
+
+  Future<void> showFollowInfoDisplayModeDialog() async {
+    var res = await Utils.showMapOptionDialog(
+      _followInfoDisplayModeMap,
+      AppSettingsController.instance.followInfoDisplayMode.value,
+      title: "关注时长显示",
+    );
+    if (res != null) {
+      AppSettingsController.instance.setFollowInfoDisplayMode(res);
     }
   }
 

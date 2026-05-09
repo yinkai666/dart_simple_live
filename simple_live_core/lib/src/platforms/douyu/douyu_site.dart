@@ -183,6 +183,23 @@ class DouyuSite implements LiveSite {
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
     Map roomInfo = await _getRoomInfo(roomId);
 
+    String? showTime;
+    try {
+      var h5RoomInfo = await HttpClient.instance.getJson(
+        "https://www.douyu.com/swf_api/h5room/$roomId",
+        queryParameters: {},
+        header: {
+          'referer': 'https://www.douyu.com/$roomId',
+          'user-agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43',
+        },
+      );
+      showTime = h5RoomInfo["data"]?["show_time"]?.toString();
+    } catch (e) {
+      // 取不到开播时间不应阻塞房间详情，吞掉异常
+      CoreLog.error(e);
+    }
+
     return LiveRoomDetail(
       cover: roomInfo["room_pic"].toString(),
       online: int.tryParse(roomInfo["room_biz_all"]["hot"].toString()) ?? 0,
@@ -199,6 +216,7 @@ class DouyuSite implements LiveSite {
       data: "",
       url: "https://www.douyu.com/$roomId",
       isRecord: roomInfo["videoLoop"] == 1,
+      showTime: showTime,
     );
   }
 

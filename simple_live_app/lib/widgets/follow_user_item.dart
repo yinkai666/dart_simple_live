@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
+import 'package:simple_live_app/app/constant.dart';
+import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
@@ -13,12 +15,14 @@ class FollowUserItem extends StatelessWidget {
   final Function()? onTap;
   final Function()? onLongPress;
   final bool playing;
+  final bool showTag;
   const FollowUserItem({
     required this.item,
     this.onRemove,
     this.onTap,
     this.onLongPress,
     this.playing = false,
+    this.showTag = true,
     super.key,
   });
 
@@ -90,23 +94,42 @@ class FollowUserItem extends StatelessWidget {
             ),
           ),
           AppStyle.hGap4,
-          Text(
-            item.watchDuration ?? "00:00:00",
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.grey,
-            ),
-          ),
+          Obx(() {
+            final mode =
+                AppSettingsController.instance.followInfoDisplayMode.value;
+            final showWatch = mode != FollowInfoDisplayMode.liveDuration;
+            final showLive = mode != FollowInfoDisplayMode.watchDuration;
+            final liveText = showLive ? _liveDurationText() : "";
+
+            final parts = <String>[];
+            if (showWatch) {
+              parts.add("看 ${item.watchDuration ?? "00:00:00"}");
+            }
+            if (liveText.isNotEmpty) {
+              parts.add(liveText);
+            }
+            if (parts.isEmpty) {
+              return const SizedBox.shrink();
+            }
+            return Text(
+              parts.join(" · "),
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.grey,
+              ),
+            );
+          }),
           AppStyle.hGap4,
-          Text(
-            item.tag.length > 8 ? '${item.tag.substring(0, 8)}...' : item.tag,
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.grey,
+          if (showTag)
+            Text(
+              item.tag.length > 8 ? '${item.tag.substring(0, 8)}...' : item.tag,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.grey,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
         ],
       ),
       trailing: playing
@@ -139,5 +162,22 @@ class FollowUserItem extends StatelessWidget {
     } else {
       return "直播中";
     }
+  }
+
+  /// 仅在主播正在直播且拿到了开播时间戳时返回非空文案
+  String _liveDurationText() {
+    if (item.liveStatus.value != 2) return "";
+    final ts = item.liveStartTime.value;
+    if (ts == null || ts.isEmpty || ts == "0") return "";
+    final start = int.tryParse(ts);
+    if (start == null) return "";
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final secs = now - start;
+    if (secs < 60) return "开播 不足1分钟";
+    final hours = secs ~/ 3600;
+    final minutes = (secs % 3600) ~/ 60;
+    final h = hours > 0 ? "$hours小时" : "";
+    final m = minutes > 0 ? "$minutes分钟" : "";
+    return "开播 $h$m";
   }
 }
