@@ -8,6 +8,8 @@ on:
 
 jobs:
   build-mac-ios-android:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     runs-on: macos-latest
     steps:
       - name: Checkout PR code
@@ -67,6 +69,8 @@ jobs:
           fastforge package --platform macos --targets dmg,zip --skip-clean
 
   build-linux:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     strategy:
       matrix:
         include:
@@ -128,6 +132,8 @@ jobs:
           mv simple_live_app-*-linux.zip simplelive-${{ matrix.arch }}-linux.zip
 
   build-windows:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     runs-on: windows-latest
     steps:
       - name: Checkout PR code
@@ -164,6 +170,8 @@ jobs:
 
   # 打包 Flatpak
   build-flatpak:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     strategy:
       matrix:
         include:

@@ -1,0 +1,73 @@
+name: iPad build
+
+on:
+  push:
+    branches:
+      - codex/ipad-multiview
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipad-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ipad:
+    if: github.ref == 'refs/heads/codex/ipad-multiview'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: simple_live_app
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: simple_live_app/pubspec.yaml
+          channel: stable
+          cache: true
+
+      - name: Restore packages
+        run: flutter pub get
+
+      - name: Check multiview layout and task isolation
+        run: |
+          dart test/multiview/layout_check.dart
+          dart test/multiview/multi_view_roster_check.dart
+          dart test/multiview/multi_view_playback_check.dart
+          dart test/room_task_scope_regression.dart
+          flutter analyze --no-pub lib/modules/multiview
+
+      - name: Build iPad app
+        run: flutter build ios --release --no-codesign
+
+      - name: Verify iPad identity and package unsigned IPA
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+          with Path('build/ios/iphoneos/Runner.app/Info.plist').open('rb') as source:
+              info = plistlib.load(source)
+          assert info['CFBundleIdentifier'] == 'com.yinkai666.slive.ipad', info['CFBundleIdentifier']
+          assert info['CFBundleDisplayName'] == 'Slive iPad'
+          assert info['UIDeviceFamily'] == [2], info['UIDeviceFamily']
+          assert info.get('UIRequiresFullScreen') is False
+          assert len(info['UISupportedInterfaceOrientations~ipad']) == 4
+          PY
+          mkdir -p build/ipad/Payload
+          ditto build/ios/iphoneos/Runner.app build/ipad/Payload/Runner.app
+          cd build/ipad
+          zip -q -r Slive-iPad-unsigned.ipa Payload
+
+      - name: Upload unsigned iPad package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Slive-iPad-unsigned
+          path: simple_live_app/build/ipad/Slive-iPad-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
 jobs:
   build-tv:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     runs-on: macos-latest
     permissions:
       contents: write

@@ -8,6 +8,8 @@ on:
 jobs:
   # 打包 Android
   build-android:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     permissions: write-all
 
@@ -99,6 +101,8 @@ jobs:
 
   # 打包 Linux
   build-linux:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     strategy:
       matrix:
         include:
@@ -196,6 +200,8 @@ jobs:
 
   # 打包Windows
   build-windows:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     runs-on: windows-latest
     permissions:
       contents: write
@@ -279,6 +285,8 @@ jobs:
 
   # 打包 Flatpak
   build-flatpak:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     strategy:
       matrix:
         include:

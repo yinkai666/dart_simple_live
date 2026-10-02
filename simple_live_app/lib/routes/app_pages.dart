@@ -12,6 +12,7 @@ import 'package:simple_live_app/modules/follow_user/follow_user_page.dart';
 import 'package:simple_live_app/modules/indexed/indexed_controller.dart';
 import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_app/modules/live_room/live_room_page.dart';
+import 'package:simple_live_app/modules/multiview/multiview_page.dart';
 import 'package:simple_live_app/modules/mine/account/account_controller.dart';
 import 'package:simple_live_app/modules/mine/account/account_page.dart';
 import 'package:simple_live_app/modules/mine/account/bilibili/qr_login_controller.dart';
@@ -95,6 +96,14 @@ class AppPages {
           site: Get.arguments[0],
           subCategory: Get.arguments[1],
         ),
+      ),
+    ),
+    GetPage(
+      name: RoutePath.kMultiView,
+      page: () => MultiViewPage(
+        initialSite: Get.arguments,
+        initialRoomId: Get.parameters['roomId'],
+        initialLabel: Get.parameters['label'],
       ),
     ),
     //直播间

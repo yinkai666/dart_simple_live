@@ -22,6 +22,8 @@ concurrency:
 
 jobs:
   build:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -56,6 +58,8 @@ jobs:
 
   # 部署工作
   deploy:
+    # This iPad-only branch builds exclusively through build_ipad.yml.
+    if: ${{ false }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

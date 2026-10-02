@@ -9,6 +9,7 @@ import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/event_bus.dart';
+import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/app/utils/list_projection.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
@@ -222,6 +223,18 @@ class FollowUserController extends BasePageController<FollowUser> {
       SafeArea(
         child: Wrap(
           children: [
+            ListTile(
+              leading: const Icon(Icons.grid_view_rounded),
+              title: const Text('加入多直播观看'),
+              onTap: () {
+                Get.back();
+                AppNavigator.toMultiView(
+                  site: Sites.allSites[item.siteId],
+                  roomId: item.roomId,
+                  label: item.userName,
+                );
+              },
+            ),
             ListTile(
               leading: const Icon(Remix.price_tag_3_line),
               title: const Text('设置标签'),

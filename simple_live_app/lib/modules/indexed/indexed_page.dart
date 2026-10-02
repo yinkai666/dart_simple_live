@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/app_style.dart';
+import 'package:simple_live_app/routes/app_navigation.dart';
 
 import 'indexed_controller.dart';
 
@@ -9,18 +10,32 @@ class IndexedPage extends GetView<IndexedController> {
 
   @override
   Widget build(BuildContext context) {
-    return OrientationBuilder(
-      builder: (context, orientation) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 760 && constraints.maxHeight >= 480;
         return Scaffold(
           body: Row(
             children: [
               Visibility(
-                visible: orientation == Orientation.landscape,
+                visible: wide,
                 child: Obx(
                   () => NavigationRail(
+                    scrollable: true,
                     selectedIndex: controller.index.value,
                     onDestinationSelected: controller.setIndex,
-                    labelType: NavigationRailLabelType.none,
+                    labelType: NavigationRailLabelType.all,
+                    leading: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Text('Slive\niPad', textAlign: TextAlign.center),
+                    ),
+                    trailing: Padding(
+                      padding: const EdgeInsets.only(top: 24),
+                      child: IconButton(
+                        tooltip: '多直播观看',
+                        onPressed: AppNavigator.toMultiView,
+                        icon: const Icon(Icons.grid_view_rounded),
+                      ),
+                    ),
                     destinations: controller.items
                         .map(
                           (item) => NavigationRailDestination(
@@ -38,7 +53,7 @@ class IndexedPage extends GetView<IndexedController> {
                   () => Container(
                     decoration: BoxDecoration(
                       border: Border(
-                        left: orientation == Orientation.landscape
+                        left: wide
                             ? BorderSide(
                                 color: Colors.grey.withAlpha(50),
                                 width: 1,
@@ -55,14 +70,21 @@ class IndexedPage extends GetView<IndexedController> {
               ),
             ],
           ),
+          floatingActionButton: wide
+              ? null
+              : FloatingActionButton.extended(
+                  onPressed: AppNavigator.toMultiView,
+                  icon: const Icon(Icons.grid_view_rounded),
+                  label: const Text('多直播'),
+                ),
           bottomNavigationBar: Visibility(
-            visible: orientation == Orientation.portrait,
+            visible: !wide,
             child: Obx(
               () => NavigationBar(
                 selectedIndex: controller.index.value,
                 onDestinationSelected: controller.setIndex,
-                height: 56,
-                labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
+                height: 64,
+                labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
                 destinations: controller.items
                     .map(
                       (item) => NavigationDestination(

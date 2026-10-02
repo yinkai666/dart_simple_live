@@ -13,7 +13,6 @@ import 'package:material_ui/material_ui.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils/permission_handler.dart';
-import 'package:simple_live_app/requests/common_request.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 typedef TextValidate = bool Function(String text);
@@ -452,65 +451,16 @@ class Utils {
   }
 
   static void checkUpdate({bool showMsg = false}) async {
+    // This branch always uses the iPad channel, including re-signed side loads.
+    if (!showMsg) return;
     try {
-      int currentVer = Utils.parseVersion(packageInfo.version);
-      CommonRequest request = CommonRequest();
-      var versionInfo = await request.checkUpdate();
-      if (versionInfo.versionNum > currentVer) {
-        Get.dialog(
-          AlertDialog(
-            title: Text(
-              "发现新版本 ${versionInfo.version}",
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 18),
-            ),
-            content: Text(
-              versionInfo.versionDesc,
-              style: const TextStyle(fontSize: 14, height: 1.4),
-            ),
-            actionsPadding: AppStyle.edgeInsetsH12,
-            actions: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: TextButton(
-                      onPressed: () {
-                        Get.back();
-                      },
-                      child: const Text("取消"),
-                    ),
-                  ),
-                  AppStyle.hGap12,
-                  Expanded(
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        elevation: 0,
-                      ),
-                      onPressed: () {
-                        launchUrlString(
-                          versionInfo.downloadUrl,
-                          mode: LaunchMode.externalApplication,
-                        );
-                      },
-                      child: const Text("更新"),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        );
-      } else {
-        if (showMsg) {
-          SmartDialog.showToast("当前已经是最新版本了");
-        }
-      }
+      await launchUrlString(
+        'https://github.com/yinkai666/dart_simple_live/actions/workflows/build_ipad.yml',
+        mode: LaunchMode.externalApplication,
+      );
     } catch (e) {
       Log.logPrint(e);
-      if (showMsg) {
-        SmartDialog.showToast("检查更新失败");
-      }
+      SmartDialog.showToast('无法打开 iPad 构建页面');
     }
   }
 

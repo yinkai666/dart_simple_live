@@ -18,6 +18,13 @@ import 'package:simple_live_app/models/db/follow_user.dart';
 /// * 需要参数的页面都应使用此类
 /// * 如不需要参数，可以使用Get.toNamed
 class AppNavigator {
+  static void toMultiView({Site? site, String? roomId, String? label}) {
+    Get.toNamed(RoutePath.kMultiView, arguments: site, parameters: {
+      if (roomId != null) 'roomId': roomId,
+      if (label != null) 'label': label,
+    });
+  }
+
   /// 跳转至分类详情
   static void toCategoryDetail({required Site site, required LiveSubCategory category}) {
     Get.toNamed(RoutePath.kCategoryDetail, arguments: [site, category]);
