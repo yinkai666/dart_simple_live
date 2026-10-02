@@ -94,8 +94,8 @@ class MultiViewController extends ChangeNotifier with WidgetsBindingObserver {
         session.detail = detail;
         session.label = detail.userName;
         session.qualities = qualities;
-        // Medium quality limits decoder and network pressure with up to 4 feeds.
-        session.qualityIndex = (qualities.length / 2).floor();
+        // Platform quality lists use the same highest-first order as single view.
+        session.qualityIndex = 0;
       } else {
         session.qualityIndex = quality;
       }

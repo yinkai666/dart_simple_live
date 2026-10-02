@@ -67,8 +67,14 @@ class AppSettingsController extends GetxController {
       false,
     );
 
-    qualityLevel.value = LocalStorageService.instance.getValue(LocalStorageService.kQualityLevel, 2);
-    qualityLevelCellular.value = LocalStorageService.instance.getValue(LocalStorageService.kQualityLevelCellular, 1);
+    final storage = LocalStorageService.instance;
+    if (!storage.getValue(LocalStorageService.kHighestQualityDefaultsApplied, false)) {
+      await storage.setValue(LocalStorageService.kQualityLevel, 2);
+      await storage.setValue(LocalStorageService.kQualityLevelCellular, 2);
+      await storage.setValue(LocalStorageService.kHighestQualityDefaultsApplied, true);
+    }
+    qualityLevel.value = storage.getValue(LocalStorageService.kQualityLevel, 2);
+    qualityLevelCellular.value = storage.getValue(LocalStorageService.kQualityLevelCellular, 2);
 
     autoExitEnable.value = LocalStorageService.instance.getValue(LocalStorageService.kAutoExitEnable, false);
 
@@ -398,14 +404,14 @@ class AppSettingsController extends GetxController {
     LocalStorageService.instance.setValue(LocalStorageService.kDanmakuFontClampDownSens, e);
   }
 
-  var qualityLevel = 1.obs;
+  var qualityLevel = 2.obs;
 
   void setQualityLevel(int level) {
     qualityLevel.value = level;
     LocalStorageService.instance.setValue(LocalStorageService.kQualityLevel, level);
   }
 
-  var qualityLevelCellular = 1.obs;
+  var qualityLevelCellular = 2.obs;
 
   void setQualityLevelCellular(int level) {
     qualityLevelCellular.value = level;
