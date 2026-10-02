@@ -71,7 +71,17 @@ mixin PlayerMixin {
     // 内存换空间, 同时通过调整参数禁用mpv回放缓存（直播暂时不需要）
     // hls流/令牌流/.. 根据mdk-sdk作者回复, rtsp 在 ffmpeg存在内存泄露, 这意味着我们只能等待修复
     // temporary fix of android platform
-    if (!Platform.isAndroid) {
+    if (Platform.isIOS) {
+      // Keep a short forward buffer for live-network jitter, with a byte cap.
+      // This is a demuxer limit, not a cap on decoder/texture memory.
+      await pp.setProperty('cache', 'yes');
+      await pp.setProperty('cache-secs', '3');
+      await pp.setProperty('cache-on-disk', 'no');
+      await pp.setProperty('demuxer-max-bytes', '${16 * 1024 * 1024}');
+      await pp.setProperty('demuxer-max-back-bytes', '0');
+      await pp.setProperty('demuxer-seekable-cache', 'no');
+      await pp.setProperty('demuxer-donate-buffer', 'no');
+    } else if (!Platform.isAndroid) {
       await pp.setProperty("cache", "no");
       await pp.setProperty("cache-secs", "0");
       await pp.setProperty('demuxer-seekable-cache', 'no');
@@ -83,6 +93,7 @@ mixin PlayerMixin {
       final directory = await getTemporaryDirectory();
       await pp.setProperty("cache", "yes");
       await pp.setProperty("cache-secs", "3");
+      await pp.setProperty('cache-on-disk', 'yes');
       await pp.setProperty('demuxer-seekable-cache', 'yes');
       await pp.setProperty('demuxer-donate-buffer', 'yes');
       await pp.setProperty("demuxer-cache-dir", directory.path);

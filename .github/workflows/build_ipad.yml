@@ -43,6 +43,7 @@ jobs:
           dart test/multiview/multi_view_danmaku_buffer_check.dart
           dart test/multiview/gesture_check.dart
           dart test/room_task_scope_regression.dart
+          dart test/playback_recovery_check.dart
           dart test/bounded_chat_buffer_check.dart
           flutter test --no-pub test/danmaku_emoticon_test.dart
           flutter test --no-pub test/multiview/material_scope_test.dart test/multiview/gesture_surface_test.dart
