@@ -167,9 +167,7 @@ double emoteDisplayHeight(
   // 下界也要夹进上界内：fontSize 来自持久化设置，脏数据把它撑到极大时下界会
   // 反超上界，`num.clamp` 直接抛 ArgumentError；聊天区是在 build 里同步调它，
   // 异常会打断整帧渲染。
-  final ceiling = maxHeight == null
-      ? kMaxEmoteLogicalHeight
-      : math.min(maxHeight, kMaxEmoteLogicalHeight);
+  final ceiling = maxHeight == null ? kMaxEmoteLogicalHeight : math.min(maxHeight, kMaxEmoteLogicalHeight);
   return raw.clamp(math.min(fontSize * 1.2, ceiling), ceiling);
 }
 
@@ -219,8 +217,7 @@ class DanmakuEmoticonRenderer {
 
   /// 测试用：缓存当前持有的源图句柄（用来断言清缓存时确实释放了它们）。
   @visibleForTesting
-  static List<ui.Image> get debugCachedSourceImages =>
-      _ImageHandleCache.debugCachedImages;
+  static List<ui.Image> get debugCachedSourceImages => _ImageHandleCache.debugCachedImages;
 
   /// [DanmakuContentItem.extra] 是否符合表情弹幕的载荷约定
   static bool canRender(Object? extra) {
@@ -289,8 +286,7 @@ class DanmakuEmoticonRenderer {
       return null;
     }
 
-    final emoteSegments =
-        segments.whereType<DanmakuEmoticonSegment>().toList(growable: false);
+    final emoteSegments = segments.whereType<DanmakuEmoticonSegment>().toList(growable: false);
     final generation = _cacheGeneration;
     final dpr = _devicePixelRatio();
     // 每个句柄都由调用方负责归还（见 [_ImageHandleCache.load]）：栅格化一结束
@@ -583,8 +579,7 @@ class DanmakuEmoticonRenderer {
         fontFamily: fontFamily,
       ))
       ..addText(text);
-    return builder.build()
-      ..layout(const ui.ParagraphConstraints(width: double.infinity));
+    return builder.build()..layout(const ui.ParagraphConstraints(width: double.infinity));
   }
 
   static String _cacheKey(
@@ -635,9 +630,8 @@ class DanmakuEmoticonRenderer {
     required double fontSize,
     required double dpr,
   }) {
-    final display = emoticon.large
-        ? emoteDisplayHeight(emoticon, fontSize: fontSize, dpr: dpr)
-        : fontSize * _emoteScale;
+    final display =
+        emoticon.large ? emoteDisplayHeight(emoticon, fontSize: fontSize, dpr: dpr) : fontSize * _emoteScale;
     return display * dpr;
   }
 
@@ -718,6 +712,11 @@ class _PlacedEmoticon {
 ///   那一份（见 [DanmakuEmoticonRenderer.render]）。
 class _ImageHandleCache {
   static const int _maxEntries = 128;
+  static const int _maxPending = 32;
+  static const int _maxWaiters = 256;
+  static const Duration _loadTimeout = Duration(seconds: 10);
+  static final Map<String, _PendingImageLoad> _pending = {};
+  static int _waiters = 0;
 
   /// 解码尺寸的区间（物理像素）。期望值由「显示尺寸 × dpr」推导
   /// （见 [DanmakuEmoticonRenderer._decodeTargetPx]），这里只做夹取。
@@ -760,52 +759,73 @@ class _ImageHandleCache {
     if (cached != null) {
       return Future.value(cached);
     }
+    if (_waiters >= _maxWaiters) return Future.value(null);
     final generation = _cacheGeneration;
+    var pending = _pending[key];
+    if (pending == null) {
+      if (_pending.length >= _maxPending) return Future.value(null);
+      final request = _PendingImageLoad();
+      pending = request;
+      _pending[key] = request;
+      ImageStream? stream;
+      ImageStreamListener? listener;
+      Timer? timer;
 
-    // 按实际显示尺寸解码：配合 fit 策略与默认的 allowUpscaling: false，
-    // 小图不会被放大，大图也只解到用得到的尺寸。
-    final provider = DanmakuEmoticonRenderer.debugImageProviderFactory?.call(url) ??
-        ResizeImage(
-          NetworkImage(url),
-          width: target,
-          height: target,
-          policy: ResizeImagePolicy.fit,
-        );
-
-    // 同 URL + 同尺寸的并发请求由 Flutter 的 ImageCache 合并，这里不重复去重
-    final completer = Completer<ImageInfo?>();
-    final stream = provider.resolve(ImageConfiguration.empty);
-    late final ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (info, _) {
-        stream.removeListener(listener);
-        // 等图期间缓存被清过：这份结果已经没人要，直接释放，不落缓存也不分发
-        if (generation != _cacheGeneration) {
-          info.dispose();
-          if (!completer.isCompleted) {
-            completer.complete(null);
-          }
+      void finish(ImageInfo? info) {
+        if (request.done.isCompleted) {
+          info?.dispose();
           return;
         }
-        // 缓存留一份，调用方拿另一份，各自独立释放
-        _put(key, info);
-        if (!completer.isCompleted) {
-          completer.complete(info.clone());
+        timer?.cancel();
+        if (identical(_pending[key], request)) _pending.remove(key);
+        try {
+          if (listener != null) stream?.removeListener(listener);
+        } finally {
+          if (info != null) {
+            if (generation == _cacheGeneration) {
+              _put(key, info);
+            } else {
+              info.dispose();
+            }
+          }
+          request.done.complete();
         }
-      },
-      onError: (error, stackTrace) {
-        stream.removeListener(listener);
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-      },
-    );
-    stream.addListener(listener);
-    return completer.future;
+      }
+
+      request.cancel = () => finish(null);
+      try {
+        final provider = DanmakuEmoticonRenderer.debugImageProviderFactory?.call(url) ??
+            ResizeImage(
+              NetworkImage(url),
+              width: target,
+              height: target,
+              policy: ResizeImagePolicy.fit,
+            );
+        stream = provider.resolve(ImageConfiguration.empty);
+        listener = ImageStreamListener(
+          (info, _) => finish(info),
+          onError: (error, stackTrace) => finish(null),
+        );
+        timer = Timer(_loadTimeout, request.cancel);
+        stream.addListener(listener);
+      } catch (_) {
+        finish(null);
+      }
+    }
+
+    _waiters++;
+    // The shared future carries no image handle. Each waiter clones its own
+    // cache handle, so one renderer disposing its result cannot hurt another.
+    return pending.done.future.then((_) {
+      return generation == _cacheGeneration ? _get(key) : null;
+    }).whenComplete(() => _waiters--);
   }
 
   /// 仅供测试与内存压力兜底
   static void clear() {
+    for (final request in _pending.values.toList()) {
+      request.cancel();
+    }
     for (final info in _cache.values) {
       info.dispose();
     }
@@ -813,16 +833,14 @@ class _ImageHandleCache {
   }
 
   /// 仅供测试：当前缓存持有的源图句柄。
-  static List<ui.Image> get debugCachedImages =>
-      _cache.values.map((info) => info.image).toList();
+  static List<ui.Image> get debugCachedImages => _cache.values.map((info) => info.image).toList();
 }
 
 /// 合成位图缓存，命中时用 [ui.Image.clone] 分发独立句柄。
 class _CompositeCache {
   static const int _maxEntries = 64;
 
-  static final LinkedHashMap<String, DanmakuEmoticonBitmap> _cache =
-      LinkedHashMap();
+  static final LinkedHashMap<String, DanmakuEmoticonBitmap> _cache = LinkedHashMap();
 
   static DanmakuEmoticonBitmap? get(String key) {
     final bitmap = _cache.remove(key);
@@ -848,4 +866,10 @@ class _CompositeCache {
     }
     _cache.clear();
   }
+}
+
+/// One physical image load, shared by a bounded number of renderers.
+class _PendingImageLoad {
+  final Completer<void> done = Completer<void>();
+  late void Function() cancel;
 }

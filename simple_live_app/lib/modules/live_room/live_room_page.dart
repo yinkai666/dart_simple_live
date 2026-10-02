@@ -502,10 +502,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                             right: 12,
                             bottom: 12,
                             child: ElevatedButton.icon(
-                              onPressed: () {
-                                controller.disableAutoScroll.value = false;
-                                controller.chatScrollToBottom();
-                              },
+                              onPressed: controller.resumeChat,
                               icon: const Icon(Icons.expand_more),
                               label: const Text("最新"),
                             ),
@@ -573,8 +570,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                             // 否则用户调「聊天字号」后文字与表情尺寸脱节
                             fontSize: AppSettingsController.instance.chatTextSize.value,
                           ),
-                          emoticonsEnabled: AppSettingsController
-                              .instance.danmuEmoticonEnable.value,
+                          emoticonsEnabled: AppSettingsController.instance.danmuEmoticonEnable.value,
                         ),
                       ),
                       contextMenuBuilder: _contextMenuBuilderFor(
@@ -600,8 +596,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                     color: Get.isDarkMode ? Colors.white : AppColors.black333,
                     fontSize: AppSettingsController.instance.chatTextSize.value,
                   ),
-                  emoticonsEnabled:
-                      AppSettingsController.instance.danmuEmoticonEnable.value,
+                  emoticonsEnabled: AppSettingsController.instance.danmuEmoticonEnable.value,
                 ),
               ),
               contextMenuBuilder: _contextMenuBuilderFor(
@@ -625,9 +620,8 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     LiveMessage message, {
     required Widget Function(BuildContext, EditableTextState) fallback,
   }) {
-    final rendersEmoticon = AppSettingsController
-            .instance.danmuEmoticonEnable.value &&
-        (message.emoticons?.isNotEmpty ?? false);
+    final rendersEmoticon =
+        AppSettingsController.instance.danmuEmoticonEnable.value && (message.emoticons?.isNotEmpty ?? false);
     if (!rendersEmoticon) {
       return fallback;
     }
@@ -657,10 +651,8 @@ class LiveRoomPage extends GetView<LiveRoomController> {
       context,
       editableTextState,
       {
-        '屏蔽用户': (s) =>
-            controller.addCurBlockAccount(stripEmoticonPlaceholder(s)),
-        '屏蔽关键词': (s) =>
-            controller.addCurBlockWord(stripEmoticonPlaceholder(s)),
+        '屏蔽用户': (s) => controller.addCurBlockAccount(stripEmoticonPlaceholder(s)),
+        '屏蔽关键词': (s) => controller.addCurBlockWord(stripEmoticonPlaceholder(s)),
       },
     );
   }
@@ -777,8 +769,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
               Obx(
                 () => SettingsAction(
                   title: "关注排序",
-                  value: _followSortMethodMap[AppSettingsController
-                      .instance.liveRoomFollowSortMethod.value],
+                  value: _followSortMethodMap[AppSettingsController.instance.liveRoomFollowSortMethod.value],
                   onTap: showLiveRoomFollowSortDialog,
                 ),
               ),
@@ -786,8 +777,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
               Obx(
                 () => SettingsAction(
                   title: "关注时长显示",
-                  value: _followInfoDisplayModeMap[AppSettingsController
-                      .instance.followInfoDisplayMode.value],
+                  value: _followInfoDisplayModeMap[AppSettingsController.instance.followInfoDisplayMode.value],
                   onTap: showFollowInfoDisplayModeDialog,
                 ),
               ),
@@ -826,8 +816,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                     () => FollowUserItem(
                       item: item,
                       showTag: false,
-                      playing: controller.rxSite.value.id == item.siteId &&
-                          controller.rxRoomId.value == item.roomId,
+                      playing: controller.rxSite.value.id == item.siteId && controller.rxRoomId.value == item.roomId,
                       onTap: () {
                         controller.resetRoom(
                           Sites.allSites[item.siteId]!,

@@ -21,6 +21,7 @@ import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_block.dart';
 import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
+import 'package:simple_live_app/modules/live_room/bounded_chat_buffer.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
 import 'package:simple_live_app/modules/live_room/player/room_task_scope.dart';
 import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
@@ -51,6 +52,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   List<LiveMessage> danmakuBuffer = [];
   Timer? danmakuTimer;
   bool _isProcessingBuffer = false;
+  Future<Object?>? _maskInFlight;
+  final _chatBuffer = BoundedChatBuffer<LiveMessage>(capacity: 150);
 
   LiveRoomController({
     required this.pSite,
@@ -128,8 +131,6 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   int _count = 0;
 
-  final int _kMaxChatMessageCount = 150;
-
   @override
   void onInit() {
     WidgetsBinding.instance.addObserver(this);
@@ -188,7 +189,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       final batchMessages = batch.map((e) => e.message).toList();
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final allowedResults = await rustDanmakuMask.allowListBatch(texts: batchMessages, nowMs: BigInt.from(nowMs));
+      final pending = rustDanmakuMask.allowListBatch(texts: batchMessages, nowMs: BigInt.from(nowMs));
+      _maskInFlight = pending;
+      final allowedResults = await pending;
 
       if (!_roomTasks.isCurrent(generation)) return;
       final filteredBatch = <LiveMessage>[];
@@ -200,10 +203,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       if (filteredBatch.isEmpty) return;
 
-      messages.addAll(filteredBatch);
-      if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
-        messages.removeRange(0, messages.length - _kMaxChatMessageCount);
-      }
+      _appendChat(filteredBatch);
 
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => chatScrollToBottom(),
@@ -228,6 +228,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     } catch (e) {
       if (_roomTasks.isCurrent(generation)) Log.logPrint(e);
     } finally {
+      _maskInFlight = null;
       _isProcessingBuffer = false;
     }
   }
@@ -236,6 +237,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     if (scrollController.position.userScrollDirection == ScrollDirection.forward) {
       disableAutoScroll.value = true;
     }
+  }
+
+  void _appendChat(Iterable<LiveMessage> incoming) {
+    _chatBuffer.append(messages, incoming, readingHistory: disableAutoScroll.value);
+  }
+
+  void resumeChat() {
+    if (_roomClosed) return;
+    disableAutoScroll.value = false;
+    _chatBuffer.resume(messages);
+    WidgetsBinding.instance.addPostFrameCallback((_) => chatScrollToBottom());
   }
 
   /// 初始化自动关闭倒计时
@@ -365,12 +377,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       //  messages.length>n 预加载部分弹幕后启用去重功能
       if (AppSettingsController.instance.danmakuMaskEnable.value && messages.length > 50) {
-        danmakuBuffer.add(msg);
+        appendRecent(danmakuBuffer, [msg], 300);
       } else {
-        if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
-          messages.removeAt(0);
-        }
-        messages.add(msg);
+        _appendChat([msg]);
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => chatScrollToBottom(),
         );
@@ -455,14 +464,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   /// 添加一条系统消息
   void addSysMsg(String msg) {
-    messages.add(
+    _appendChat([
       LiveMessage(
         type: LiveMessageType.chat,
         userName: "LiveSysMessage",
         message: msg,
         color: LiveMessageColor.white,
       ),
-    );
+    ]);
   }
 
   /// 接收到WebSocket关闭信息
@@ -1320,6 +1329,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _stopDanmaku();
     danmakuBuffer.clear();
     messages.clear();
+    _chatBuffer.clear();
+    disableAutoScroll.value = false;
     superChats.clear();
     danmakuController?.clear();
     // 表情包是分房间下发的，换房间后上一个房间的合成位图没有复用价值
@@ -1424,7 +1435,22 @@ ${error?.stackTrace}''');
     // 直接退出直播间不经过 resetRoom，这里补一次：表情是分房间下发的，
     // 留在静态缓存里的源图句柄与合成位图出房间后就没有复用价值了。
     DanmakuEmoticonRenderer.clearCache();
-    rustDanmakuMask.dispose();
+    _chatBuffer.clear();
+    unawaited(_releaseDanmakuMask());
     super.onClose();
+  }
+
+  Future<void> _releaseDanmakuMask() async {
+    // Native owned disposal must not race a batch borrowing the same handle.
+    try {
+      await _maskInFlight;
+    } catch (_) {
+      // A failed batch still needs disposal.
+    }
+    try {
+      rustDanmakuMask.dispose();
+    } catch (e) {
+      Log.logPrint(e);
+    }
   }
 }
