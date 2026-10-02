@@ -2,11 +2,7 @@ import 'dart:async';
 
 import 'package:web_socket_channel/io.dart';
 
-enum SocketStatus {
-  connected,
-  failed,
-  closed,
-}
+enum SocketStatus { connected, failed, closed }
 
 class WebScoketUtils {
   SocketStatus status = SocketStatus.closed;
@@ -59,23 +55,32 @@ class WebScoketUtils {
   int maxReconnectTime = 5;
 
   StreamSubscription<dynamic>? streamSubscription;
+  int _generation = 0;
+  bool _closed = true;
 
   void connect({bool retry = false}) async {
     close();
+    _closed = false;
+    final generation = _generation;
     try {
       var wsurl = url;
       if (backupUrl != null && backupUrl!.isNotEmpty && retry) {
         wsurl = backupUrl!;
       }
-      webSocket = IOWebSocketChannel.connect(
+      final socket = IOWebSocketChannel.connect(
         wsurl,
         connectTimeout: Duration(seconds: 10),
         headers: headers,
       );
-
-      await webSocket?.ready;
+      webSocket = socket;
+      await socket.ready;
+      if (_closed || generation != _generation) {
+        unawaited(socket.sink.close());
+        return;
+      }
       ready();
     } catch (e) {
+      if (_closed || generation != _generation) return;
       if (!retry) {
         connect(retry: true);
         return;
@@ -86,25 +91,35 @@ class WebScoketUtils {
 
   /// 连接完成
   void ready() {
+    if (_closed) return;
+    final generation = _generation;
     status = SocketStatus.connected;
 
     streamSubscription = webSocket?.stream.listen(
-      (data) => receiveMessage(data),
-      onError: (e, s) => onError(e, s),
-      onDone: onDone,
+      (data) {
+        if (!_closed && generation == _generation) receiveMessage(data);
+      },
+      onError: (Object e, StackTrace s) {
+        if (!_closed && generation == _generation) onError(e, s);
+      },
+      onDone: () {
+        if (!_closed && generation == _generation) onDone();
+      },
     );
 
     onReady?.call();
-    initHeartBeat();
+    if (!_closed && generation == _generation) initHeartBeat();
   }
 
   void initHeartBeat() {
-    heartBeatTimer = Timer.periodic(
-      Duration(milliseconds: heartBeatTime),
-      (timer) {
-        onHeartBeat?.call();
-      },
-    );
+    heartBeatTimer?.cancel();
+    if (_closed) return;
+    final generation = _generation;
+    heartBeatTimer = Timer.periodic(Duration(milliseconds: heartBeatTime), (
+      timer,
+    ) {
+      if (!_closed && generation == _generation) onHeartBeat?.call();
+    });
   }
 
   void receiveMessage(dynamic data) {
@@ -119,11 +134,11 @@ class WebScoketUtils {
   }
 
   void onDone() {
-    if (status == SocketStatus.closed) {
+    if (_closed || status == SocketStatus.closed) {
       return;
     }
     onReconnect?.call();
-    reconnect();
+    if (!_closed) reconnect();
   }
 
   void sendMessage(dynamic message) {
@@ -133,25 +148,34 @@ class WebScoketUtils {
   }
 
   void close() {
+    _closed = true;
+    _generation++;
     status = SocketStatus.closed;
 
     streamSubscription?.cancel();
+    streamSubscription = null;
 
     reconnectTimer?.cancel();
     reconnectTimer = null;
 
     webSocket?.sink.close();
+    webSocket = null;
 
     heartBeatTimer?.cancel();
     heartBeatTimer = null;
   }
 
   void reconnect() {
+    if (_closed) return;
+    heartBeatTimer?.cancel();
+    heartBeatTimer = null;
     status = SocketStatus.closed;
     if (reconnectTime < maxReconnectTime) {
       reconnectTime++;
-      reconnectTimer ??= Timer.periodic(Duration(seconds: 5), (timer) {
-        connect();
+      final generation = _generation;
+      reconnectTimer ??= Timer(Duration(seconds: 5), () {
+        reconnectTimer = null;
+        if (!_closed && generation == _generation) connect();
       });
     } else {
       onClose?.call("重连超过最大次数，与服务器断开连接");

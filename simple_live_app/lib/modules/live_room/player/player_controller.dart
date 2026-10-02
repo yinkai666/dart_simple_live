@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:io';
 import 'package:auto_orientation_v2/auto_orientation_v2.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -23,11 +24,14 @@ import 'package:simple_live_app/app/custom_throttle.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
+import 'package:simple_live_app/modules/live_room/player/room_task_scope.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
 
 mixin PlayerMixin {
+  final playerCommands = PlayerCommandQueue();
+  bool playerClosing = false;
   GlobalKey<VideoState> globalPlayerKey = GlobalKey<VideoState>();
   GlobalKey globalDanmuKey = GlobalKey();
 
@@ -239,7 +243,7 @@ mixin PlayerStateMixin on PlayerMixin {
 }
 mixin PlayerDanmakuMixin on PlayerStateMixin {
   /// 弹幕控制器
-  late DanmakuController? danmakuController;
+  DanmakuController? danmakuController;
 
   void initDanmakuController(DanmakuController e) {
     danmakuController = e;
@@ -474,18 +478,25 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
   }
 
   Future saveScreenshot() async {
+    if (playerClosing) return;
     final imageSaver = ImageGallerySaver();
     try {
       SmartDialog.showLoading(msg: "正在保存截图");
       //检查相册权限,仅iOS需要
       var permission = await Utils.checkPhotoPermission();
+      if (playerClosing) return;
       if (!permission) {
         SmartDialog.showToast("没有相册权限");
         SmartDialog.dismiss(status: SmartStatus.loading);
         return;
       }
 
-      var imageData = await player.screenshot();
+      Uint8List? captured;
+      await playerCommands.run(() async {
+        if (!playerClosing) captured = await player.screenshot();
+      });
+      if (playerClosing) return;
+      final imageData = captured;
       if (imageData == null) {
         SmartDialog.showToast("截图失败,数据为空");
         SmartDialog.dismiss(status: SmartStatus.loading);
@@ -532,6 +543,7 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
       SmartDialog.showToast("设备不支持小窗播放");
       return;
     }
+    if (playerClosing) return;
     danmakuStateBeforePIP = showDanmakuState.value;
     //关闭并清除弹幕
     if (AppSettingsController.instance.pipHideDanmu.value && danmakuStateBeforePIP) {
@@ -556,7 +568,9 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
       ),
     );
 
+    if (playerClosing) return;
     _pipSubscription ??= pip.pipStatusStream.listen((event) {
+      if (playerClosing) return;
       if (event == PiPStatus.disabled) {
         // 返回前台时恢复弹幕
         danmakuController?.resume();
@@ -710,6 +724,7 @@ mixin PlayerGestureControlMixin on PlayerStateMixin, PlayerMixin, PlayerSystemMi
   }
 
   Future _realSetVolume(int volume) async {
+    if (playerClosing) return;
     Log.logPrint(volume);
     volumeController.setVolume(volume / 100);
   }
@@ -776,6 +791,7 @@ class PlayerController extends BaseController
 
   void initStream() {
     _errorSubscription = player.stream.error.listen((event) {
+      if (playerClosing) return;
       Log.d("播放器错误：$event");
       // 跳过无音频输出的错误
       // Could not open/initialize audio device -> no sound.
@@ -787,6 +803,7 @@ class PlayerController extends BaseController
     });
 
     _playingSubscription = player.stream.playing.listen((event) {
+      if (playerClosing) return;
       if (event) {
         WakelockPlus.enable();
         Log.d("Playing");
@@ -794,16 +811,19 @@ class PlayerController extends BaseController
     });
 
     _completedSubscription = player.stream.completed.listen((event) {
+      if (playerClosing) return;
       if (event) {
         mediaEnd();
       }
     });
     _logSubscription = player.stream.log.listen((event) {
+      if (playerClosing) return;
       Log.d("播放器日志：$event");
     });
     _widthSubscription = player.stream.width.listen((event) {
+      if (playerClosing) return;
       Log.d('width:$event  W:${(player.state.width)}  H:${(player.state.height)}');
-      if (player.state.width == null) {
+      if (player.state.width == null || player.state.height == null) {
         return;
       } else {
         // 可获取直播流size时且不为全屏模式时判断是否进入全屏模式
@@ -814,6 +834,7 @@ class PlayerController extends BaseController
       }
     });
     _heightSubscription = player.stream.height.listen((event) {
+      if (playerClosing) return;
       Log.d('height:$event  W:${(player.state.width)}  H:${(player.state.height)}');
       isVertical.value = (player.state.height ?? 9) > (player.state.width ?? 16);
     });
@@ -953,17 +974,34 @@ class PlayerController extends BaseController
   }
 
   @override
-  void onClose() async {
+  void onClose() {
+    playerClosing = true;
     Log.w("播放器关闭");
     if (smallWindowState.value) {
       exitSmallWindow();
     }
     disposeStream();
+    hideControlsTimer?.cancel();
+    hideSeekTipTimer?.cancel();
+    hidevolumeTimer?.cancel();
+    throttle?.storeFunc = null;
+    throttle = null;
     disposeDanmakuController();
-    await resetSystem();
-    // todo: https://github.com/media-kit/media-kit/issues/1443
-    // only in debug mode
-    await player.dispose();
+    unawaited(_releasePlayer());
     super.onClose();
+  }
+
+  Future<void> _releasePlayer() async {
+    // A platform UI restoration failure must not retain the native player.
+    try {
+      await resetSystem();
+    } catch (e) {
+      Log.logPrint(e);
+    }
+    try {
+      await playerCommands.run(() => player.dispose());
+    } catch (e) {
+      Log.logPrint(e);
+    }
   }
 }

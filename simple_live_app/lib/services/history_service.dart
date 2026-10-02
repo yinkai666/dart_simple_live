@@ -13,6 +13,7 @@ class HistoryService extends GetxService {
   static HistoryService get instance => Get.find<HistoryService>();
   final Stopwatch _stopwatch = Stopwatch();
   var _elapsed = Duration.zero;
+  int _savedElapsedSeconds = 0;
   Duration _oldWatchedDuration = Duration.zero;
   History? curLiveRoomHistory;
 
@@ -22,6 +23,8 @@ class HistoryService extends GetxService {
 
   // 开始计时
   void start(History history) {
+    if (curLiveRoomHistory?.id == history.id && _stopwatch.isRunning) return;
+    stop();
     _loadHistory(history);
     _stopwatch.start();
     _timer = Timer.periodic(_saveInterval, (timer) {
@@ -33,6 +36,7 @@ class HistoryService extends GetxService {
   void reset(String roomId) {
     _updateHistory();
     _stopwatch.reset();
+    _savedElapsedSeconds = 0;
     History? history = DBService.instance.getHistory(roomId);
     if (history != null) {
       _loadHistory(history);
@@ -41,15 +45,22 @@ class HistoryService extends GetxService {
 
   // 停止计时
   void stop() {
-    _stopwatch.stop();
-    _updateHistory();
-    _stopwatch.reset();
-    _elapsed = Duration.zero;
-    // 取消定时器
     _timer?.cancel();
     _timer = null;
+    _stopwatch.stop();
+    _updateHistory();
+    final elapsed = _stopwatch.elapsed;
+    _stopwatch.reset();
+    _elapsed = Duration.zero;
+    _savedElapsedSeconds = 0;
     curLiveRoomHistory = null;
-    Log.i("本次观看时长：$_elapsed");
+    Log.i("本次观看时长：$elapsed");
+  }
+
+  @override
+  void onClose() {
+    stop();
+    super.onClose();
   }
 
   void _loadHistory(History history) {
@@ -72,7 +83,8 @@ class HistoryService extends GetxService {
     Duration curTime = _oldWatchedDuration + _elapsed;
     Log.i("已观看时间：${_oldWatchedDuration.toHMSString()}_增加时间：${_elapsed.toHMSString()}");
     curLiveRoomHistory?.watchDuration = curTime.toHMSString();
-    curLiveRoomHistory?.syncDuration += _elapsed.inSeconds;
+    curLiveRoomHistory?.syncDuration += _elapsed.inSeconds - _savedElapsedSeconds;
+    _savedElapsedSeconds = _elapsed.inSeconds;
     curLiveRoomHistory?.updateTime = DateTime.now();
     DBService.instance.addOrUpdateHistory(curLiveRoomHistory!);
     EventBus.instance.emit(Constant.kUpdateFollow, curLiveRoomHistory);

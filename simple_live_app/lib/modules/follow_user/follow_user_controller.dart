@@ -10,6 +10,7 @@ import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/utils.dart';
+import 'package:simple_live_app/app/utils/list_projection.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
@@ -18,6 +19,9 @@ import 'package:simple_live_app/services/follow_service.dart';
 class FollowUserController extends BasePageController<FollowUser> {
   StreamSubscription<dynamic>? onUpdatedIndexedStream;
   StreamSubscription<dynamic>? onUpdatedListStream;
+  final _rows = ListProjection<FollowUser>();
+  final _tags = ListProjection<FollowUserTag>();
+  Worker? _hideOfflineWorker;
 
   /// 0:全部 1:直播中 2:未直播
   var filterMode = FollowUserTag(id: "0", tag: "全部", userId: []).obs;
@@ -64,14 +68,36 @@ class FollowUserController extends BasePageController<FollowUser> {
     );
 
     sortMethod = AppSettingsController.instance.followSortMethod;
+    _hideOfflineWorker = ever(AppSettingsController.instance.hideOfflineFollow, (_) => filterData());
     super.onInit();
   }
 
   @override
   Future refreshData() async {
-    await FollowService.instance.loadData();
+    if (isClosed || loadding) return;
+    loadding = true;
     updateTagList();
-    super.refreshData();
+    filterData();
+    pageLoadding.value = list.isEmpty;
+    pageError.value = false;
+    try {
+      await FollowService.instance.loadData();
+      if (isClosed) return;
+      updateTagList();
+      filterData();
+      currentPage = 2;
+      canLoadMore.value = false;
+    } catch (e) {
+      if (!isClosed) handleError(e, showPageError: list.isEmpty);
+    } finally {
+      loadding = false;
+      if (!isClosed) pageLoadding.value = false;
+    }
+  }
+
+  @override
+  Future loadData() async {
+    if (currentPage == 1) await refreshData();
   }
 
   @override
@@ -92,33 +118,42 @@ class FollowUserController extends BasePageController<FollowUser> {
   }
 
   void updateTagList() {
-    userTagList.assignAll(FollowService.instance.followTagList);
-    tagList.value = tagList.take(3).toList();
-    for (var i in userTagList) {
-      if (!tagList.contains(i)) {
-        tagList.add(i);
-      }
-    }
+    final tags = FollowService.instance.followTagList.toList();
+    if (!_tags.update(tags, (tag) => (tag.id, tag.tag))) return;
+    userTagList.assignAll(tags);
+    tagList.assignAll([...tagList.take(3), ...tags]);
+    final selected = tagList.firstWhereOrNull((tag) => tag.id == filterMode.value.id);
+    filterMode.value = selected ?? tagList.first;
   }
 
   // 数据清洗：不关心中间 data_flow，最终由filterData决定显示数据
   void filterData() {
+    if (isClosed) return;
     bool hideOffline = AppSettingsController.instance.hideOfflineFollow.value;
-
+    Iterable<FollowUser> filtered;
     if (filterMode.value.tag == "全部") {
-      list.assignAll(FollowService.instance.followList.value);
+      filtered = FollowService.instance.followList;
     } else if (filterMode.value.tag == "直播中") {
-      list.assignAll(FollowService.instance.liveList.value);
+      filtered = FollowService.instance.liveList;
     } else if (filterMode.value.tag == "未开播") {
-      list.assignAll(FollowService.instance.notLiveList.value);
+      filtered = FollowService.instance.notLiveList;
     } else {
       FollowService.instance.filterDataByTag(filterMode.value);
-      list.assignAll(FollowService.instance.curTagFollowList);
+      filtered = FollowService.instance.curTagFollowList;
     }
 
     if (hideOffline && filterMode.value.tag != "未开播") {
-      list.retainWhere((user) => user.liveStatus.value == 2);
+      filtered = filtered.where((user) => user.liveStatus.value == 2);
     }
+    final rows = filtered.toList();
+    if (_rows.update(
+        rows,
+        (user) =>
+            (user.id, user.userName, user.face, user.remark, user.tag, user.watchDuration, user.watchDurationSec))) {
+      list.assignAll(rows);
+    }
+    pageEmpty.value = rows.isEmpty;
+    canLoadMore.value = false;
   }
 
   // 用户自定义关注样式
@@ -253,7 +288,7 @@ class FollowUserController extends BasePageController<FollowUser> {
               () {
                 int selectedIndex = copiedList.indexOf(checkTag.value);
                 WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (selectedIndex >= 0) {
+                  if (selectedIndex >= 0 && scrollController.hasClients) {
                     scrollController.animateTo(
                       selectedIndex * 60.0, // 假设每项高度为 60
                       duration: const Duration(milliseconds: 300),
@@ -294,13 +329,16 @@ class FollowUserController extends BasePageController<FollowUser> {
           ],
         ),
       ),
-    );
+    ).whenComplete(scrollController.dispose);
   }
 
   @override
   void onClose() {
+    _hideOfflineWorker?.dispose();
     onUpdatedIndexedStream?.cancel();
     onUpdatedListStream?.cancel();
+    scrollController.dispose();
+    easyRefreshController.dispose();
     super.onClose();
   }
 }
