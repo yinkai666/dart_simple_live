@@ -6,6 +6,8 @@ import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/modules/live_room/player/room_task_scope.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
+import 'multi_view_danmaku.dart';
+
 /// Owns one native player. Global orientation, audio focus and history are not
 /// managed per tile: closing a tile must never stop another room.
 class MultiViewSession {
@@ -23,6 +25,7 @@ class MultiViewSession {
       player,
       configuration: const VideoControllerConfiguration(enableHardwareAcceleration: true),
     );
+    danmaku = MultiViewDanmaku(site: site, roomId: roomId);
   }
 
   final String id;
@@ -31,6 +34,7 @@ class MultiViewSession {
   String label;
   late final Player player;
   late final VideoController videoController;
+  late final MultiViewDanmaku danmaku;
   final tasks = RoomTaskScope();
   LiveRoomDetail? detail;
   List<LivePlayQuality> qualities = [];
@@ -38,6 +42,7 @@ class MultiViewSession {
   bool loading = true;
   String? error;
   bool isAudible = false;
+  double volume = 100;
   bool suspended = false;
   bool ready = false;
   bool closed = false;
@@ -46,10 +51,16 @@ class MultiViewSession {
   void invalidate() {
     closed = true;
     tasks.close();
+    danmaku.setActive(false);
   }
 
   /// Called by the workspace's native command queue after pending opens finish.
   Future<void> release() async {
+    try {
+      await danmaku.dispose();
+    } catch (_) {
+      // A socket shutdown failure must not retain the video decoder.
+    }
     for (final subscription in subscriptions) {
       try {
         await subscription.cancel();

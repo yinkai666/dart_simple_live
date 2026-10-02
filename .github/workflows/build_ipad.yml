@@ -40,7 +40,10 @@ jobs:
           dart test/multiview/layout_check.dart
           dart test/multiview/multi_view_roster_check.dart
           dart test/multiview/multi_view_playback_check.dart
+          dart test/multiview/multi_view_danmaku_buffer_check.dart
+          dart test/multiview/gesture_check.dart
           dart test/room_task_scope_regression.dart
+          flutter test --no-pub test/multiview/material_scope_test.dart test/multiview/gesture_surface_test.dart
           flutter analyze --no-pub lib/modules/multiview
 
       - name: Build iPad app

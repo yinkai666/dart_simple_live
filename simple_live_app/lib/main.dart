@@ -23,6 +23,7 @@ import 'package:simple_live_app/app/utils/listen_fourth_button.dart';
 import 'package:simple_live_app/firebase_options.dart';
 import 'package:simple_live_app/hive_registrar.g.dart';
 import 'package:simple_live_app/modules/other/debug_log_page.dart';
+import 'package:simple_live_app/modules/multiview/multi_view_material_scope.dart';
 import 'package:simple_live_app/modules/settings/appstyle_settings/appstyle_setting_contorller.dart';
 import 'package:simple_live_app/routes/app_analytics_observer.dart';
 import 'package:simple_live_app/routes/app_pages.dart';
@@ -200,7 +201,10 @@ class MyApp extends StatelessWidget {
           getPages: AppPages.routes,
           //国际化
           locale: const Locale("zh", "CN"),
-          localizationsDelegates: GlobalMaterialLocalizations.delegates,
+          localizationsDelegates: [
+            ...GlobalMaterialLocalizations.delegates,
+            ...multiViewFlutterLocalizations,
+          ],
           supportedLocales: const [Locale("zh", "CN")],
           logWriterCallback: (text, {bool? isError}) {
             Log.addDebugLog(text, (isError ?? false) ? Colors.red : Colors.grey);

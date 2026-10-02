@@ -57,6 +57,7 @@ class MultiViewController extends ChangeNotifier with WidgetsBindingObserver {
       if (session.closed || _closed || message.isEmpty) return;
       session.error = '播放中断，请重试或切换清晰度';
       session.loading = false;
+      session.danmaku.setActive(false);
       _changed();
     }));
     _updateFlags();
@@ -73,6 +74,7 @@ class MultiViewController extends ChangeNotifier with WidgetsBindingObserver {
     session.loading = true;
     session.ready = false;
     session.error = null;
+    session.danmaku.setActive(false);
     _changed();
     try {
       await _commands.run(() async {
@@ -121,6 +123,8 @@ class MultiViewController extends ChangeNotifier with WidgetsBindingObserver {
       });
       if (!current()) return;
       session.loading = false;
+      session.danmaku.connect(session.detail!);
+      _updateFlags();
       _changed();
     } catch (e) {
       if (!current()) return;
@@ -132,8 +136,10 @@ class MultiViewController extends ChangeNotifier with WidgetsBindingObserver {
 
   void _updateFlags() {
     for (final session in _sessions.values) {
-      session.isAudible = session.id == audioSessionId;
+      session.isAudible = _roster.isAudible(session.id);
+      session.volume = _roster.volume(session.id);
       session.suspended = _roster.shouldSuspend(session.id, background: _background);
+      session.danmaku.setActive(!_background && session.ready && !session.loading && session.error == null);
     }
   }
 
@@ -153,9 +159,10 @@ class MultiViewController extends ChangeNotifier with WidgetsBindingObserver {
             await session.player.play();
           }
         }
-        final audible = _sessions[audioSessionId];
-        if (!_closed && audible != null && !audible.closed && audible.ready) {
-          await audible.player.setVolume(100);
+        for (final audible in snapshot) {
+          if (!_closed && !audible.closed && audible.ready && audible.isAudible && !audible.suspended) {
+            await audible.player.setVolume(audible.volume);
+          }
         }
       },
     );
@@ -178,6 +185,42 @@ class MultiViewController extends ChangeNotifier with WidgetsBindingObserver {
     _updateFlags();
     _changed();
     await _syncPlayback();
+  }
+
+  Future<void> toggleAudio(String id) async {
+    if (_closed) return;
+    _roster.toggleAudio(id);
+    _updateFlags();
+    _changed();
+    await _syncPlayback();
+  }
+
+  Future<void> setVolume(String id, double value) async {
+    if (_closed) return;
+    _roster.setVolume(id, value);
+    final session = _sessions[id];
+    if (session == null) return;
+    session.volume = _roster.volume(id);
+    _changed();
+    // A slider/gesture must not mute and restart all of the other players.
+    try {
+      await _commands.run(() async {
+        if (_closed || session.closed) return;
+        await session.player.setVolume(session.isAudible && !session.suspended ? session.volume : 0);
+      });
+    } catch (_) {
+      if (!_closed && !session.closed) {
+        session.error = '音量更新失败，请重试';
+        _changed();
+      }
+    }
+  }
+
+  void toggleDanmaku(String id) {
+    final session = _sessions[id];
+    if (_closed || session == null) return;
+    session.danmaku.setEnabled(!session.danmaku.enabled.value);
+    _changed();
   }
 
   Future<void> remove(String id) async {
