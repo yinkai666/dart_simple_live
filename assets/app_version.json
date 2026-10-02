@@ -1,7 +1,7 @@
 {
-    "version": "1.8.7",
-    "version_num": 10807,
-    "version_desc": "- 一个非常重要的过渡版本 \n- 修复huya搜索 @GH4NG \n- 引入Firebase \n- 大量数据错误和潜在问题修复 \n- 一些细节调整  \n- 关于linux的一系列修复 @pugaizai \n- tips: ios和macos用户请到action更新测试或者下载上游仓库版本",
-    "prerelease": true,
+    "version": "1.8.14",
+    "version_num": 10814,
+    "version_desc": "- fix: 进一步修正douyu断流问题 \n- tips: ios和macos用户请到action更新测试或者下载上游仓库版本",
+    "prerelease": false,
     "download_url": "https://github.com/SlotSun/dart_simple_live/releases"
 }

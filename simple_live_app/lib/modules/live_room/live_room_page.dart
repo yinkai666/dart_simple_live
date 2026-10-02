@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:floating/floating.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:get/get.dart';
 import 'package:lottie/lottie.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -11,9 +11,11 @@ import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
+import 'package:simple_live_app/modules/live_room/danmaku/chat_emoticon_span.dart';
 import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controls.dart';
 import 'package:simple_live_app/services/follow_service.dart';
+import 'package:simple_live_app/widgets/context_menu.dart';
 import 'package:simple_live_app/widgets/desktop_refresh_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
 import 'package:simple_live_app/widgets/keep_alive_wrapper.dart';
@@ -132,9 +134,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
             ),
             actions: buildAppbarActions(context),
           ),
-          body: orientation == Orientation.portrait
-              ? buildPhoneUI(context)
-              : buildTabletUI(context),
+          body: orientation == Orientation.portrait ? buildPhoneUI(context) : buildTabletUI(context),
         );
       },
     );
@@ -265,16 +265,18 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     } else if (AppSettingsController.instance.scaleMode.value == 4) {
       boxFit = BoxFit.contain;
       aspectRatio = 4 / 3;
+    } else if (AppSettingsController.instance.scaleMode.value == 5) {
+      boxFit = BoxFit.contain;
+      double aspectByUser = AppSettingsController.instance.aspectByUser.value;
+      aspectRatio = aspectByUser;
     }
     return Stack(
       children: [
         Video(
           key: controller.globalPlayerKey,
           controller: controller.videoController,
-          pauseUponEnteringBackgroundMode:
-              AppSettingsController.instance.playerAutoPause.value,
-          resumeUponEnteringForegroundMode:
-              AppSettingsController.instance.playerAutoPause.value,
+          pauseUponEnteringBackgroundMode: AppSettingsController.instance.playerAutoPause.value,
+          resumeUponEnteringForegroundMode: AppSettingsController.instance.playerAutoPause.value,
           controls: (state) {
             return playerControls(state, controller);
           },
@@ -461,9 +463,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                 Tab(
                   child: Obx(
                     () => Text(
-                      controller.superChats.isNotEmpty
-                          ? "SC(${controller.superChats.length})"
-                          : "SC",
+                      controller.superChats.isNotEmpty ? "SC(${controller.superChats.length})" : "SC",
                     ),
                   ),
                 ),
@@ -486,16 +486,14 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                           separatorBuilder: (_, i) => Obx(
                             () => SizedBox(
                               // *2与原来的EdgeInsets.symmetric(vertical: )做兼容
-                              height: AppSettingsController
-                                      .instance.chatTextGap.value *
-                                  2,
+                              height: AppSettingsController.instance.chatTextGap.value * 2,
                             ),
                           ),
                           padding: AppStyle.edgeInsetsA12,
                           itemCount: controller.messages.length,
-                          itemBuilder: (_, i) {
+                          itemBuilder: (context, i) {
                             var item = controller.messages[i];
-                            return buildMessageItem(item);
+                            return buildMessageItem(item, context);
                           },
                         ),
                         Visibility(
@@ -528,7 +526,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     );
   }
 
-  Widget buildMessageItem(LiveMessage message) {
+  Widget buildMessageItem(LiveMessage message, BuildContext context) {
     if (message.userName == "LiveSysMessage") {
       return Obx(
         () => SelectableText(
@@ -558,26 +556,30 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                         bottomRight: Radius.circular(12),
                       ),
                     ),
-                    padding:
-                        AppStyle.edgeInsetsA4.copyWith(left: 12, right: 12),
+                    padding: AppStyle.edgeInsetsA4.copyWith(left: 12, right: 12),
                     child: SelectableText.rich(
                       TextSpan(
                         text: "${message.userName}：",
                         style: TextStyle(
                           color: Colors.grey,
-                          fontSize:
-                              AppSettingsController.instance.chatTextSize.value,
+                          fontSize: AppSettingsController.instance.chatTextSize.value,
                         ),
-                        children: [
-                          TextSpan(
-                            text: message.message,
-                            style: TextStyle(
-                              color: Get.isDarkMode
-                                  ? Colors.white
-                                  : AppColors.black333,
-                            ),
-                          )
-                        ],
+                        children: buildChatMessageSpans(
+                          context,
+                          message,
+                          TextStyle(
+                            color: Get.isDarkMode ? Colors.white : AppColors.black333,
+                            // 行内表情的高度按这份 style 的字号推算，必须与正文同源，
+                            // 否则用户调「聊天字号」后文字与表情尺寸脱节
+                            fontSize: AppSettingsController.instance.chatTextSize.value,
+                          ),
+                          emoticonsEnabled: AppSettingsController
+                              .instance.danmuEmoticonEnable.value,
+                        ),
+                      ),
+                      contextMenuBuilder: _contextMenuBuilderFor(
+                        message,
+                        fallback: _defaultContextMenu,
                       ),
                     ),
                   ),
@@ -591,16 +593,75 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                   color: Colors.grey,
                   fontSize: AppSettingsController.instance.chatTextSize.value,
                 ),
-                children: [
-                  TextSpan(
-                    text: message.message,
-                    style: TextStyle(
-                      color: Get.isDarkMode ? Colors.white : AppColors.black333,
-                    ),
-                  )
-                ],
+                children: buildChatMessageSpans(
+                  context,
+                  message,
+                  TextStyle(
+                    color: Get.isDarkMode ? Colors.white : AppColors.black333,
+                    fontSize: AppSettingsController.instance.chatTextSize.value,
+                  ),
+                  emoticonsEnabled:
+                      AppSettingsController.instance.danmuEmoticonEnable.value,
+                ),
+              ),
+              contextMenuBuilder: _contextMenuBuilderFor(
+                message,
+                fallback: _contextMenuBuilder,
               ),
             ),
+    );
+  }
+
+  /// 会渲染出表情的消息，只在**选区里没有真实文字**时不建上下文菜单。
+  ///
+  /// `SelectableText.rich` 里的 `WidgetSpan` 在文本里是一个占位字符（`\uFFFC`）。
+  /// 右键落在图片上时会把这个占位符当成一个"词"选中：selection 是**有效的**，
+  /// 但 `customContextMenuBuilder` 拿它去 `textInside` 时又可能越界抛
+  /// `RangeError (start)`；系统默认菜单则干脆给出「复制」，复制出来的是一个
+  /// 看不见的占位符——两者都不是可用状态。
+  /// 判据因此不能只看 `selection.isValid`，要看剥掉占位符与空白之后还剩不剩
+  /// 真实文字：混排消息（`白花300块[热]`）右键点在正文上仍应保留屏蔽/复制能力。
+  Widget Function(BuildContext, EditableTextState) _contextMenuBuilderFor(
+    LiveMessage message, {
+    required Widget Function(BuildContext, EditableTextState) fallback,
+  }) {
+    final rendersEmoticon = AppSettingsController
+            .instance.danmuEmoticonEnable.value &&
+        (message.emoticons?.isNotEmpty ?? false);
+    if (!rendersEmoticon) {
+      return fallback;
+    }
+    return (context, state) {
+      final value = state.textEditingValue;
+      if (!shouldShowContextMenu(value.text, value.selection)) {
+        return _noContextMenu(context, state);
+      }
+      return fallback(context, state);
+    };
+  }
+
+  Widget _noContextMenu(BuildContext context, EditableTextState state) {
+    return const SizedBox.shrink();
+  }
+
+  /// 与 `SelectableText` 的默认菜单等价（框架里那份 `_defaultContextMenuBuilder`
+  /// 是私有的，这里照抄它唯一的一行），保证气泡样式下普通消息的菜单不变。
+  Widget _defaultContextMenu(BuildContext context, EditableTextState state) {
+    return AdaptiveTextSelectionToolbar.editableText(editableTextState: state);
+  }
+
+  Widget _contextMenuBuilder(BuildContext context, EditableTextState editableTextState) {
+    // 入参要先剥掉表情占位符：拖选跨过 `白花300块[热]` 时选中文本里带着 \uFFFC，
+    // 原样写进屏蔽表就与弹幕原文 `[热]` 永远匹配不上，屏蔽词静默失效
+    return customContextMenuBuilder(
+      context,
+      editableTextState,
+      {
+        '屏蔽用户': (s) =>
+            controller.addCurBlockAccount(stripEmoticonPlaceholder(s)),
+        '屏蔽关键词': (s) =>
+            controller.addCurBlockWord(stripEmoticonPlaceholder(s)),
+      },
     );
   }
 
@@ -650,13 +711,11 @@ class LiveRoomPage extends GetView<LiveRoomController> {
               Obx(
                 () => SettingsNumber(
                   title: "文字大小",
-                  value:
-                      AppSettingsController.instance.chatTextSize.value.toInt(),
+                  value: AppSettingsController.instance.chatTextSize.value.toInt(),
                   min: 8,
                   max: 36,
                   onChanged: (e) {
-                    AppSettingsController.instance
-                        .setChatTextSize(e.toDouble());
+                    AppSettingsController.instance.setChatTextSize(e.toDouble());
                   },
                 ),
               ),
@@ -664,8 +723,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
               Obx(
                 () => SettingsNumber(
                   title: "上下间隔",
-                  value:
-                      AppSettingsController.instance.chatTextGap.value.toInt(),
+                  value: AppSettingsController.instance.chatTextGap.value.toInt(),
                   min: 0,
                   max: 12,
                   onChanged: (e) {
@@ -699,7 +757,11 @@ class LiveRoomPage extends GetView<LiveRoomController> {
             children: [
               SettingsAction(
                 title: "关键词屏蔽",
-                onTap: controller.showDanmuShield,
+                onTap: controller.showFollowBlockShield,
+              ),
+              SettingsAction(
+                title: "用户屏蔽",
+                onTap: () => controller.showFollowBlockShield(blockWords: false),
               ),
               AppStyle.divider,
               SettingsAction(
@@ -733,6 +795,11 @@ class LiveRoomPage extends GetView<LiveRoomController> {
               SettingsAction(
                 title: "画面尺寸",
                 onTap: controller.showPlayerSettingsSheet,
+              ),
+              AppStyle.divider,
+              SettingsAction(
+                title: "自定义画面尺寸",
+                onTap: controller.showAspectRatioSheet,
               ),
             ],
           ),

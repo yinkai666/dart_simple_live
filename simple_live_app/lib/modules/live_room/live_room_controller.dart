@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -18,10 +18,13 @@ import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/app/utils/sandbox.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
+import 'package:simple_live_app/models/db/follow_user_block.dart';
 import 'package:simple_live_app/models/db/history.dart';
+import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
 import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
 import 'package:simple_live_app/services/db_service.dart';
+import 'package:simple_live_app/services/follow_block_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/services/history_service.dart';
 import 'package:simple_live_app/src/rust/api/danmaku_mask.dart';
@@ -33,11 +36,11 @@ import 'package:url_launcher/url_launcher_string.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 class LiveRoomController extends PlayerController with WidgetsBindingObserver {
+  StreamSubscription<dynamic>? subscription;
   final Site pSite;
   final String pRoomId;
   late LiveDanmaku liveDanmaku;
   late DanmakuMask rustDanmakuMask;
-
 
   List<LiveMessage> danmakuBuffer = [];
   Timer? danmakuTimer;
@@ -73,8 +76,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 聊天信息
   RxList<LiveMessage> messages = RxList<LiveMessage>();
 
+  /// 当前直播间屏蔽项
+  Rx<FollowUserBlock?> followUserBlock = Rx<FollowUserBlock?>(null);
+
   /// 清晰度数据
-  RxList<LivePlayQuality> qualites = RxList<LivePlayQuality>();
+  RxList<LivePlayQuality> qualities = RxList<LivePlayQuality>();
 
   /// 当前清晰度
   var currentQuality = -1;
@@ -116,6 +122,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   int _count = 0;
 
+  final int _kMaxChatMessageCount = 150;
+
   @override
   void onInit() {
     WidgetsBinding.instance.addObserver(this);
@@ -124,12 +132,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
     initAutoExit();
     showDanmakuState.value = AppSettingsController.instance.danmuEnable.value;
-    followed.value =
-        FollowService.instance.getFollowExist("${site.id}_$roomId");
+    followed.value = FollowService.instance.getFollowExist("${site.id}_$roomId");
+    // 解冻：更新 lastWatchTime 并从休眠列表移除
+    FollowService.instance.resumeUser("${site.id}_$roomId");
     loadData();
 
     scrollController.addListener(scrollListener);
-
+    subscription = EventBus.instance.listen(Constant.kUpdateDanmaku, (data) {
+      if(danmakuController?.option.fontSize != data as double ){
+        updateDanmuOption(danmakuController?.option.copyWith(fontSize: data));
+      }
+    });
     _initDanmakuMask();
     super.onInit();
   }
@@ -138,12 +151,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     rustDanmakuMask = DanmakuMask(
       baseWindowMs: AppSettingsController.instance.danmuWindowMs.value * 1000,
       bucketCount: AppSettingsController.instance.danmuWindowMs.value,
-      useNormalization:
-          AppSettingsController.instance.danmuTextNormalization.value,
-      useFrequencyControl:
-          AppSettingsController.instance.danmuFrequencyControl.value,
+      useNormalization: AppSettingsController.instance.danmuTextNormalization.value,
+      useFrequencyControl: AppSettingsController.instance.danmuFrequencyControl.value,
       maxFrequency: AppSettingsController.instance.danmuMaxFrequency.value,
-      adaptiveWindow: false,
     );
     danmakuTimer = Timer.periodic(
       const Duration(milliseconds: 500),
@@ -183,8 +193,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (filteredBatch.isEmpty) return;
 
       messages.addAll(filteredBatch);
-      if (messages.length > 200 && !disableAutoScroll.value) {
-        messages.removeRange(0, messages.length - 200);
+      if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
+        messages.removeRange(0, messages.length - _kMaxChatMessageCount);
       }
 
       WidgetsBinding.instance.addPostFrameCallback(
@@ -203,6 +213,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
                   msg.color.g,
                   msg.color.b,
                 ),
+                // 表情包（目前仅 B 站下发）：交给渲染层把 [占位符] 换成图片
+                extra: msg.emoticons,
               ))
           .toList());
     } finally {
@@ -211,8 +223,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void scrollListener() {
-    if (scrollController.position.userScrollDirection ==
-        ScrollDirection.forward) {
+    if (scrollController.position.userScrollDirection == ScrollDirection.forward) {
       disableAutoScroll.value = true;
     }
   }
@@ -221,12 +232,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void initAutoExit() {
     if (AppSettingsController.instance.autoExitEnable.value) {
       autoExitEnable.value = true;
-      autoExitMinutes.value =
-          AppSettingsController.instance.autoExitDuration.value;
+      autoExitMinutes.value = AppSettingsController.instance.autoExitDuration.value;
       setAutoExit();
     } else {
-      autoExitMinutes.value =
-          AppSettingsController.instance.roomAutoExitDuration.value;
+      autoExitMinutes.value = AppSettingsController.instance.roomAutoExitDuration.value;
     }
   }
 
@@ -311,12 +320,36 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         }
       }
 
+      // 当前直播间关键词屏蔽检查
+      for (var keyword in followUserBlock.value!.blockWords) {
+        Pattern? pattern;
+        if (Utils.isRegexFormat(keyword)) {
+          String removedSlash = Utils.removeRegexFormat(keyword);
+          try {
+            pattern = RegExp(removedSlash);
+          } catch (e) {
+            Log.d("关键词：$keyword 正则格式错误");
+          }
+        } else {
+          pattern = keyword;
+        }
+        if (pattern != null && msg.message.contains(pattern)) {
+          Log.d("关键词：$keyword\n已屏蔽${site.id}_$roomId消息内容：${msg.message}");
+          return;
+        }
+      }
+      // 当前直播间发言用户屏蔽
+      // todo: 更精细化的uid匹配
+      var accountInBlock = followUserBlock.value!.blockAccounts.any((item) => item.name == msg.userName);
+      if (accountInBlock) {
+        return;
+      }
+
       //  messages.length>n 预加载部分弹幕后启用去重功能
-      if (AppSettingsController.instance.danmakuMaskEnable.value&&
-          messages.length > 50) {
+      if (AppSettingsController.instance.danmakuMaskEnable.value && messages.length > 50) {
         danmakuBuffer.add(msg);
       } else {
-        if (messages.length > 200 && !disableAutoScroll.value) {
+        if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
           messages.removeAt(0);
         }
         messages.add(msg);
@@ -336,13 +369,69 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
               msg.color.g,
               msg.color.b,
             ),
+            // 表情包（目前仅 B 站下发）：交给渲染层把 [占位符] 换成图片
+            extra: msg.emoticons,
           ),
         ]);
       }
     } else if (msg.type == LiveMessageType.online) {
       online.value = msg.data;
     } else if (msg.type == LiveMessageType.superChat) {
-      superChats.add(msg.data);
+      // set newest sc at the top， limit 20 better I think
+      // unique ensures from front
+      LiveSuperChatMessage scData = msg.data;
+      bool contain = superChats.any(
+        (s) => s.startTime == scData.startTime && s.userName == scData.userName && s.message == scData.message,
+      );
+      if(!contain){
+        superChats.insert(0, msg.data);
+        if (superChats.length > 20) {
+          superChats.removeRange(20, superChats.length);
+        }
+      }
+    }
+  }
+
+  /// 添加当前房间屏蔽词
+  void addCurBlockWord(String word) {
+    // 为剥离getx做准备
+    if (!followUserBlock.value!.blockWords.contains(word) && word != "") {
+      followUserBlock.value!.blockWords.add(word);
+      FollowBlockService.instance.addBlockWord(siteId: site.id, roomId: roomId, word: word);
+      followUserBlock.refresh();
+    }
+    SmartDialog.showToast("已屏蔽词:$word");
+  }
+
+  void delCurBlockWord(String word) {
+    if (followUserBlock.value!.blockWords.contains(word)) {
+      followUserBlock.value!.blockWords.remove(word);
+      FollowBlockService.instance.removeBlockWord(siteId: site.id, roomId: roomId, word: word);
+      followUserBlock.refresh();
+    }
+  }
+
+  /// 添加当前房间屏蔽用户
+  void addCurBlockAccount(String accName) {
+    bool exists = followUserBlock.value!.blockAccounts.any((acc) => acc.name == accName);
+    if (!exists && accName != "") {
+      //todo: temp use uid == 0
+      var accInMessage = messages.firstWhereOrNull((e) => e.userName == accName);
+      var accId = accInMessage?.userId ?? "0";
+      var acc = FollowUserBlockAccount(uid: accId, name: accName);
+      followUserBlock.value!.blockAccounts.add(acc);
+      FollowBlockService.instance.addBlockAccount(siteId: site.id, roomId: roomId, account: acc);
+      followUserBlock.refresh();
+    }
+    SmartDialog.showToast("已屏蔽用户:$accName");
+  }
+
+  void delCurBlockAccount(String accName) {
+    bool exists = followUserBlock.value!.blockAccounts.any((acc) => acc.name == accName);
+    if (exists) {
+      followUserBlock.value!.blockAccounts.removeWhere((e) => e.name == accName);
+      FollowBlockService.instance.removeBlockAccount(siteId: site.id, roomId: roomId, name: accName);
+      followUserBlock.refresh();
     }
   }
 
@@ -397,21 +486,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
               ),
             );
           } else {
-            followed.value =
-                DBService.instance.getFollowExist("${site.id}_$roomId");
+            followed.value = DBService.instance.getFollowExist("${site.id}_$roomId");
           }
         }
       }
 
-      getSuperChatMessage();
-
       addHistory();
       // 确认房间关注状态
-      followed.value =
-          FollowService.instance.getFollowExist("${site.id}_$roomId");
+      followed.value = FollowService.instance.getFollowExist("${site.id}_$roomId");
       online.value = detail.value!.online;
       liveStatus.value = detail.value!.status || detail.value!.isRecord;
+      followUserBlock.value = FollowBlockService.instance.getBlock(siteId: site.id, roomId: roomId);
       if (liveStatus.value) {
+        getSuperChatMessage();
         getPlayQualites();
         addSysMsg("开始连接弹幕服务器");
         initDanmau();
@@ -424,7 +511,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       Log.logPrint(e);
       //SmartDialog.showToast(e.toString());
       loadError.value = true;
-      if(e is Error){
+      if (e is Error) {
         error = e;
       }
     } finally {
@@ -437,14 +524,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     currentQuality = -1;
 
     try {
-      var playQualites =
-          await site.liveSite.getPlayQualites(detail: detail.value!);
+      var playQualites = await site.liveSite.getPlayQualites(detail: detail.value!);
 
       if (playQualites.isEmpty) {
         SmartDialog.showToast("无法读取播放清晰度");
         return;
       }
-      qualites.assignAll(playQualites);
+      qualities.assignAll(playQualites);
       var qualityLevel = await getQualityLevel();
       if (qualityLevel == 2) {
         //最高
@@ -469,8 +555,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     try {
       var connectivityResult = await (Connectivity().checkConnectivity());
       if (connectivityResult.first == ConnectivityResult.mobile) {
-        qualityLevel =
-            AppSettingsController.instance.qualityLevelCellular.value;
+        qualityLevel = AppSettingsController.instance.qualityLevelCellular.value;
       }
     } catch (e) {
       Log.logPrint(e);
@@ -479,11 +564,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   Future<void> getPlayUrl() async {
-    currentQualityInfo.value = qualites[currentQuality].quality;
+    currentQualityInfo.value = qualities[currentQuality].quality;
     currentLineInfo.value = "";
     currentLineIndex = -1;
-    var playUrl = await site.liveSite
-        .getPlayUrls(detail: detail.value!, quality: qualites[currentQuality]);
+    var playUrl = await site.liveSite.getPlayUrls(detail: detail.value!, quality: qualities[currentQuality]);
     if (playUrl.urls.isEmpty) {
       SmartDialog.showToast("无法读取播放地址");
       return;
@@ -584,8 +668,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 读取SC
   void getSuperChatMessage() async {
     try {
-      var sc =
-          await site.liveSite.getSuperChatMessage(roomId: detail.value!.roomId);
+      var sc = await site.liveSite.getSuperChatMessage(roomId: detail.value!.roomId);
       superChats.addAll(sc);
     } catch (e) {
       Log.logPrint(e);
@@ -622,8 +705,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
     var id = "${site.id}_$roomId";
-    var historyDuration =
-        HistoryService.instance.getHistoryDuration(followUserId: id);
+    var historyDurationSec = HistoryService.instance.getHistoryDurationSec(followUserId: id);
     await FollowService.instance.addFollow(
       FollowUser(
         id: id,
@@ -632,8 +714,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         userName: detail.value?.userName ?? "",
         face: detail.value?.userAvatar ?? "",
         addTime: DateTime.now(),
-        watchDuration: historyDuration,
-      )..liveStatus.value = liveStatus.value ? 2 : 1,
+        lastWatchTime: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        watchDurationSec: historyDurationSec,
+      )
+        ..liveStatus.value = liveStatus.value ? 2 : 1
+        ..cover.value = detail.value?.cover ?? "",
     );
     followed.value = true;
     EventBus.instance.emit(Constant.kUpdateFollow, id);
@@ -689,7 +774,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
             danmakuController: danmakuController,
             onTapDanmuShield: () {
               Get.back();
-              showDanmuShield();
+              showFollowBlockShield();
             },
           ),
         ],
@@ -740,9 +825,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
           await getPlayUrl();
         },
         child: ListView.builder(
-          itemCount: qualites.length,
+          itemCount: qualities.length,
           itemBuilder: (_, i) {
-            var item = qualites[i];
+            var item = qualities[i];
             return RadioListTile(
               value: i,
               title: Text(item.quality),
@@ -820,6 +905,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
                     title: const Text("4:3"),
                     visualDensity: VisualDensity.compact,
                   ),
+                  RadioListTile(
+                    value: 5,
+                    title: Obx(() => Text(
+                        "自定义（${AppSettingsController.instance.aspectWidth.value}:${AppSettingsController.instance.aspectHeight.value}）")),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ],
               ),
             ),
@@ -829,22 +920,79 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     );
   }
 
-  void showDanmuShield() {
+  void showAspectRatioSheet() {
+    final widthController = TextEditingController(text: AppSettingsController.instance.aspectWidth.value.toString());
+    final heightController = TextEditingController(text: AppSettingsController.instance.aspectHeight.value.toString());
+    Utils.showBottomSheet(
+      title: "自定义缩放比例",
+      child: Padding(
+        padding: AppStyle.edgeInsetsH16,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: widthController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: "宽",
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                AppStyle.hGap12,
+                const Text("x", style: TextStyle(fontSize: 18)),
+                AppStyle.hGap12,
+                Expanded(
+                  child: TextField(
+                    controller: heightController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: "高",
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            AppStyle.vGap12,
+            TextButton(
+              onPressed: () {
+                final w = int.tryParse(widthController.text) ?? 16;
+                final h = int.tryParse(heightController.text) ?? 9;
+                if (w <= 0 || h <= 0) return;
+                AppSettingsController.instance.setAspectWidth(w);
+                AppSettingsController.instance.setAspectHeight(h);
+                AppSettingsController.instance.setAspectByUser(w / h);
+                AppSettingsController.instance.setScaleMode(5);
+                updateScaleMode();
+                Get.back();
+              },
+              child: const Text("确定"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void showFollowBlockShield({bool blockWords = true}) {
     TextEditingController keywordController = TextEditingController();
 
     void addKeyword() {
       if (keywordController.text.isEmpty) {
-        SmartDialog.showToast("请输入关键词");
+        SmartDialog.showToast("请输入${blockWords ? "关键词" : "用户名"}");
         return;
       }
-
-      AppSettingsController.instance
-          .addShieldList(keywordController.text.trim());
+      addCurBlockWord(keywordController.text.trim());
       keywordController.text = "";
     }
 
     Utils.showBottomSheet(
-      title: "关键词屏蔽",
+      title: "当前主播${blockWords ? "弹幕" : "用户"}屏蔽",
       child: ListView(
         padding: AppStyle.edgeInsetsA12,
         children: [
@@ -853,7 +1001,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
             decoration: InputDecoration(
               contentPadding: AppStyle.edgeInsetsH12,
               border: const OutlineInputBorder(),
-              hintText: "请输入关键词",
+              hintText: "请输入${blockWords ? "关键词" : "用户名"}",
               suffixIcon: TextButton.icon(
                 onPressed: addKeyword,
                 icon: const Icon(Icons.add),
@@ -865,43 +1013,57 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
             },
           ),
           AppStyle.vGap12,
-          Obx(
-            () => Text(
-              "已添加${AppSettingsController.instance.shieldList.length}个关键词（点击移除）",
+          Obx(() {
+            var len =
+                blockWords ? followUserBlock.value!.blockWords.length : followUserBlock.value!.blockAccounts.length;
+            return Text(
+              "已添加$len个${blockWords ? "关键词" : "用户"}（点击移除）",
               style: Get.textTheme.titleSmall,
-            ),
-          ),
+            );
+          }),
           AppStyle.vGap12,
-          Obx(
-            () => Wrap(
+          Obx(() {
+            final block = followUserBlock.value!;
+
+            final List<({String label, VoidCallback onTap})> items = blockWords
+                ? block.blockWords
+                    .map(
+                      (item) => (
+                        label: item,
+                        onTap: () => delCurBlockWord(item),
+                      ),
+                    )
+                    .toList()
+                : block.blockAccounts
+                    .map(
+                      (item) => (
+                        label: item.name,
+                        onTap: () => delCurBlockAccount(item.name),
+                      ),
+                    )
+                    .toList();
+
+            return Wrap(
               runSpacing: 12,
               spacing: 12,
-              children: AppSettingsController.instance.shieldList
+              children: items
                   .map(
                     (item) => InkWell(
                       borderRadius: AppStyle.radius24,
-                      onTap: () {
-                        AppSettingsController.instance.removeShieldList(item);
-                      },
+                      onTap: item.onTap,
                       child: Container(
                         decoration: BoxDecoration(
                           border: Border.all(color: Colors.grey),
                           borderRadius: AppStyle.radius24,
                         ),
-                        padding: AppStyle.edgeInsetsH12.copyWith(
-                          top: 4,
-                          bottom: 4,
-                        ),
-                        child: Text(
-                          item,
-                          style: Get.textTheme.bodyMedium,
-                        ),
+                        padding: AppStyle.edgeInsetsH12.copyWith(top: 4, bottom: 4),
+                        child: Text(item.label, style: Get.textTheme.bodyMedium),
                       ),
                     ),
                   )
                   .toList(),
-            ),
-          ),
+            );
+          })
         ],
       ),
     );
@@ -960,8 +1122,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void showAutoExitSheet() {
-    if (AppSettingsController.instance.autoExitEnable.value &&
-        !delayAutoExit.value) {
+    if (AppSettingsController.instance.autoExitEnable.value && !delayAutoExit.value) {
       SmartDialog.showToast("已设置了全局定时关闭");
       return;
     }
@@ -1012,11 +1173,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
                 if (value == null || (value.hour == 0 && value.minute == 0)) {
                   return;
                 }
-                var duration =
-                    Duration(hours: value.hour, minutes: value.minute);
+                var duration = Duration(hours: value.hour, minutes: value.minute);
                 autoExitMinutes.value = duration.inMinutes;
-                AppSettingsController.instance
-                    .setRoomAutoExitDuration(autoExitMinutes.value);
+                AppSettingsController.instance.setRoomAutoExitDuration(autoExitMinutes.value);
                 //setAutoExitDuration(duration.inMinutes);
                 setAutoExit();
               },
@@ -1069,6 +1228,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     messages.clear();
     superChats.clear();
     danmakuController?.clear();
+    // 表情包是分房间下发的，换房间后上一个房间的合成位图没有复用价值
+    DanmakuEmoticonRenderer.clearCache();
 
     // 重新设置LiveDanmaku
     liveDanmaku = site.liveSite.getDanmaku();
@@ -1125,6 +1286,9 @@ ${error?.stackTrace}''');
 
     liveDanmaku.stop();
     danmakuController = null;
+    // 直接退出直播间不经过 resetRoom，这里补一次：表情是分房间下发的，
+    // 留在静态缓存里的源图句柄与合成位图出房间后就没有复用价值了。
+    DanmakuEmoticonRenderer.clearCache();
     rustDanmakuMask.dispose();
     super.onClose();
   }

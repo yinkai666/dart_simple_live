@@ -39,15 +39,10 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="1.8.7" date="2026-02-06">
+    <release version="1.8.14" date="2026-09-25">
       <description>
-        <p>- 一个非常重要的过渡版本 </p>
-        <p>- 修复huya搜索 @GH4NG </p>
-        <p>- 引入Firebase </p>
-        <p>- 大量数据错误和潜在问题修复 </p>
-        <p>- 一些细节调整  </p>
-        <p>- 关于linux的一系列修复 @pugaizai </p>
-        <p>- tips: ios和macos用户请到action更新测试或者下载上游仓库版本</p>
+        <p>fix: 进一步修正douyu断流问题</p>
+        <p>tips: ios和macos用户请到action更新测试或者下载上游仓库版本</p>
       </description>
     </release>
   </releases>

@@ -11,6 +11,15 @@ class LocalStorageService extends GetxService {
   /// 缩放模式
   static const String kPlayerScaleMode = "ScaleMode";
 
+  /// 用户自定义宽高比
+  static const String kPlayerAspectByUser = "PlayerAspectByUser";
+
+  /// 用户自定义画面宽度
+  static const String kPlayerAspectWidth = "PlayerAspectWidth";
+
+  /// 用户自定义画面高度
+  static const String kPlayerAspectHeight = "PlayerAspectHeight";
+
   /// 网站排序
   static const String kSiteSort = "SiteSort";
 
@@ -62,8 +71,19 @@ class LocalStorageService extends GetxService {
   /// 弹幕去重
   static const String kDanmakuMaskEnable = "DanmakuMaskEnable";
 
+  /// 弹幕表情包（目前仅 B 站）
+  static const String kDanmuEmoticonEnable = "DanmuEmoticonEnable";
+
   /// 弹幕字重
   static const String kDanmuFontWeight = "DanmuFontWeight";
+
+  /// 弹幕随屏幕缩放
+  static const String kDanmakuFontClamped = "DanmakuFontClamped";
+
+  /// 弹幕随屏蔽缩放速度比率：upSens_放大/downSens_缩小
+  static const String kDanmakuFontClampUpSens = "DanmakuFontClampUpSens";
+
+  static const String kDanmakuFontClampDownSens = "DanmakuFontClampDownSens";
 
   /// 弹幕去重参数--文本归一化
   static const String kDanmuTextNormalization = "DanmuTextNormalization";
@@ -126,6 +146,9 @@ class LocalStorageService extends GetxService {
   /// 播放器音量
   static const String kPlayerVolume = "PlayerVolume";
 
+  /// 播放器音量
+  static const String kVerticalDragLock = "VerticalDragLock";
+
   /// 小窗隐藏弹幕
   static const String kPIPHideDanmu = "PIPHideDanmu";
 
@@ -134,6 +157,15 @@ class LocalStorageService extends GetxService {
 
   /// 抖音cookie
   static const String kDouyinCookie = "DouyinCookie";
+
+  /// 斗鱼cookie
+  static const String kDouyuCookie = "DouyuCookie";
+
+  /// 斗鱼dy_did
+  static const String kDouyuDyDid = "DouyuDyDid";
+
+  /// 斗鱼ltp0
+  static const String kDouyuLTP0 = "DouyuLTP0";
 
   ///主题色
   static const String kStyleColor = "kStyleColor";
@@ -168,6 +200,9 @@ class LocalStorageService extends GetxService {
   /// 视频硬件解码器
   static const String kVideoDoubleBuffering = "VideoDoubleBuffering";
 
+  /// NVIDIA RTX Video Super Resolution
+  static const String kEnableRtxVsr = "EnableRtxVsr";
+
   /// 开启自动更新关注
   static const String kAutoUpdateFollowEnable = "AutoUpdateFollowEnable";
 
@@ -195,7 +230,11 @@ class LocalStorageService extends GetxService {
   /// WebDAV_最后一次备份时间
   static const String kWebDAVLastRecoverTime = "kWebDAVLastRecoverTime";
 
-  /// windows窗口size
+  /// windows 开屏最大化
+  static const String kWindowMaxAuto = "WindowMaxAuto";
+  static const String kWindowMaxState = "WindowMaxState";
+
+  /// window窗口size
   static const String kWindowX = "WindowX";
 
   static const String kWindowY = "WindowY";
@@ -203,6 +242,15 @@ class LocalStorageService extends GetxService {
   static const String kWindowWidth = "WindowWidth";
 
   static const String kWindowHeight = "WindowHeight";
+
+  /// window小窗size
+  static const String kWindowPipX = "WindowPipX";
+
+  static const String kWindowPipY = "WindowPipY";
+
+  static const String kWindowPipWidth = "WindowPipWidth";
+
+  static const String kWindowPipHeight = "WindowPipHeight";
 
   /// 关注列表排序方法
   static const String kFollowSortMethod = "FollowSortMethod";
@@ -222,8 +270,20 @@ class LocalStorageService extends GetxService {
   /// 隐藏不在线关注
   static const String kHideOfflineFollow = "HideOfflineFollow";
 
+  /// 隐藏取消关注快速按钮
+  static const String kHideRemoveFollow = "kHideRemoveFollow";
+
   /// 虎牙自定义 HYSDK_UA
   static const String kHuyaSdkUa = "HuyaSdkUa";
+
+  /// 关注列表快照（直播状态缓存）
+  static const String kFollowSnapshot = "FollowSnapshot";
+
+  /// 开启关注列表快照
+  static const String kFollowSnapshotEnable = "FollowSnapshotEnable";
+
+  /// 休眠阈值（天）
+  static const String kDormancyThreshold = "DormancyThreshold";
 
   late Box settingsBox;
   late Box<String> shieldBox;

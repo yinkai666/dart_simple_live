@@ -1,9 +1,10 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:remixicon/remixicon.dart';
 
 class Constant {
   static const String kUpdateFollow = "UpdateFollow";
   static const String kUpdateHistory = "UpdateHistory";
+  static const String kUpdateDanmaku = "UpdateDanmaku";
 
   static final Map<String, HomePageItem> allHomePages = {
     "recommend": HomePageItem(
@@ -59,6 +60,7 @@ enum SortMethod {
   recently,
   userNameASC,
   userNameDESC,
+  tag,
 }
 
 extension SortMethodStore on SortMethod {

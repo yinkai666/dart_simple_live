@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:remixicon/remixicon.dart';
@@ -122,89 +122,92 @@ class FollowUserPage extends GetView<FollowUserController> {
               children: [
                 Expanded(
                   child: Obx(
-                        () =>
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Wrap(
-                            spacing: 12,
-                            children: controller.tagList.map(
-                                  (option) {
-                                return FilterButton(
-                                  text: option.tag,
-                                  selected: controller.filterMode.value ==
-                                      option,
-                                  onTap: () {
-                                    controller.setFilterMode(option);
-                                  },
-                                );
+                    () => SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Wrap(
+                        spacing: 12,
+                        children: controller.tagList.map(
+                          (option) {
+                            return FilterButton(
+                              text: option.tag,
+                              selected: controller.filterMode.value == option,
+                              onTap: () {
+                                controller.setFilterMode(option);
                               },
-                            ).toList(),
-                          ),
-                        ),
+                            );
+                          },
+                        ).toList(),
+                      ),
+                    ),
                   ),
                 ),
               ],
             ),
           ),
           Obx(
-                () =>
-                Expanded(
-                  child: AppSettingsController.instance.followStyleNotGrid.value
-                      ? PageGridView(
-                    crossAxisSpacing: 12,
-                    crossAxisCount: count,
-                    pageController: controller,
-                    firstRefresh: true,
-                    showPCRefreshButton: false,
-                    itemBuilder: (_, i) {
-                      var item = controller.list[i];
-                      var site = Sites.allSites[item.siteId]!;
-                      return FollowUserItem(
-                        item: item,
-                        onRemove: () {
-                          controller.removeFollow(item);
-                        },
-                        onTap: () {
-                          AppNavigator.toLiveRoomDetail(
-                              site: site, roomId: item.roomId);
-                        },
-                        onLongPress: () {
-                          // 长按弹出操作：设置标签或查看详情
-                          controller.showBottomMenu(item);
-                        },
-                      );
-                    },
-                  )
-                      : KeepAliveWrapper(
-                    child: PageGridView(
-                      pageController: controller,
-                      padding: AppStyle.edgeInsetsA12,
-                      firstRefresh: true,
-                      mainAxisSpacing: 12,
+            () => Expanded(
+              child: AppSettingsController.instance.followStyleNotGrid.value
+                  ? PageGridView(
                       crossAxisSpacing: 12,
-                      crossAxisCount: c,
+                      crossAxisCount: count,
+                      pageController: controller,
+                      firstRefresh: true,
+                      showPCRefreshButton: false,
                       itemBuilder: (_, i) {
                         var item = controller.list[i];
-                        // 或许直接继承字段更好，标记工作
-                        LiveRoomItem liveRoomItem = LiveRoomItem(
-                          roomId: item.roomId,
-                          title: item.title.value,
-                          cover: item.cover.value,
-                          userName: item.userName,
-                          online: item.online.value,
-                        );
                         var site = Sites.allSites[item.siteId]!;
-                          return LiveRoomCard(
-                            site,
-                            liveRoomItem,
-                            onLongPress: () {
-                              controller.showBottomMenu(item);
+                        return FollowUserItem(
+                          item: item,
+                          onRemove: () {
+                            controller.removeFollow(item);
+                          },
+                          onTap: () {
+                            AppNavigator.toLiveRoomDetail(site: site, roomId: item.roomId);
+                          },
+                          onLongPress: () {
+                            // 长按弹出操作：设置标签或查看详情
+                            controller.showBottomMenu(item);
+                          },
+                        );
+                      },
+                    )
+                  : KeepAliveWrapper(
+                      child: Obx(
+                        () {
+                          // temp
+                          final hide = AppSettingsController.instance.hideRemoveFollowButton.value;
+                          return PageGridView(
+                            pageController: controller,
+                            padding: AppStyle.edgeInsetsA12,
+                            firstRefresh: true,
+                            mainAxisSpacing: 12,
+                            crossAxisSpacing: 12,
+                            crossAxisCount: c,
+                            itemBuilder: (_, i) {
+                              var item = controller.list[i];
+                              // 或许直接继承字段更好，标记工作
+                              LiveRoomItem liveRoomItem = LiveRoomItem(
+                                roomId: item.roomId,
+                                title: item.title.value,
+                                cover: item.cover.value,
+                                userName: item.userName,
+                                online: item.online.value,
+                              );
+                              var site = Sites.allSites[item.siteId]!;
+                              return LiveRoomCard(
+                                site,
+                                liveRoomItem,
+                                onFollowRemove: hide ? null : () => controller.removeFollow(item),
+                                onLongPress: () {
+                                  controller.showBottomMenu(item);
+                                },
+                              );
                             },
                           );
-                      },
+                        },
+                      ),
                     ),
-                  ),
-                ),
+            ),
           ),
         ],
       ),

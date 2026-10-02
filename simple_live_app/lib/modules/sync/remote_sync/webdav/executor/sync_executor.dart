@@ -5,6 +5,7 @@ import 'package:archive/archive.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/webdav/interface/sync_resource.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/webdav/resources/blockwords_sync_resource.dart';
+import 'package:simple_live_app/modules/sync/remote_sync/webdav/resources/follow_block_sync_resource.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/webdav/resources/follow_sync_resource.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/webdav/resources/history_sync_resource.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/webdav/resources/settings_sync_resource.dart';
@@ -19,12 +20,7 @@ class SyncExecutor {
 
   SyncExecutor._();
 
-  final List<SyncResource> _resources = [
-    FollowSyncResource(),
-    HistorySyncResource(),
-    BlockwordsSyncResource(),
-    UserAccountCookieSyncResource(),
-    SettingsSyncResource(),
+  List<SyncResource> _resources = [
   ];
 
   void buildExecutorAttr(
@@ -36,14 +32,16 @@ class SyncExecutor {
     bool isSyncSetting = true,
   }) {
     _davClient = davClient;
-    _resources.addAll([
+    _resources = [
       if (isSyncFollows) FollowSyncResource(),
       if (isSyncHistories) HistorySyncResource(),
       if (isSyncBlockWord) BlockwordsSyncResource(),
       if (isSyncAccount) UserAccountCookieSyncResource(),
       if (isSyncSetting) SettingsSyncResource(),
-    ]);
+      FollowBlockSyncResource(),
+    ]; // 整体替换 防止单例无限add, fuck ai
   }
+
   // fetch -> local-> remote -> select sync-mode
   // migration is needed after recover data from remote
   // migration depends on setting-kHiveDbVer, user did not select sync setting maybe
@@ -55,8 +53,7 @@ class SyncExecutor {
 
     for (final resource in _resources) {
       final local = await resource.loadLocal();
-      final remote =
-          remoteArchive == null ? null : resource.loadRemote(remoteArchive);
+      final remote = remoteArchive == null ? null : resource.loadRemote(remoteArchive);
 
       switch (mode) {
         case SyncMode.uploadAll:

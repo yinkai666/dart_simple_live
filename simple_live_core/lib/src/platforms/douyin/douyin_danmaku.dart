@@ -4,10 +4,10 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:simple_live_core/simple_live_core.dart';
-import 'package:simple_live_core/src/platforms/douyin/douyin_request_params.dart';
-import 'package:simple_live_core/src/common/js_engine.dart';
 import 'package:simple_live_core/src/common/web_socket_util.dart';
+import 'package:simple_live_core/src/platforms/douyin/douyin_request_params.dart';
 import 'package:simple_live_core/src/platforms/douyin/proto/douyin.pb.dart';
+import 'package:simple_live_core/src/platforms/douyin/xbogus.dart';
 
 
 
@@ -45,7 +45,7 @@ class DouyinDanmaku implements LiveDanmaku {
   Function(String msg)? onClose;
   @override
   Function()? onReady;
-  String serverUrl = "wss://webcast3-ws-web-lq.douyin.com/webcast/im/push/v2/";
+  String serverUrl = "wss://webcast100-ws-web-lq.douyin.com/webcast/im/push/v2/";
   late DouyinDanmakuArgs danmakuArgs;
   WebScoketUtils? webScoketUtils;
 
@@ -209,7 +209,6 @@ class DouyinDanmaku implements LiveDanmaku {
   /// - [roomId] 房间ID, 例如：7382735338101328680
   /// - [uniqueId] 用户唯一ID, 例如：7273033021933946427
   /// 参考代码 hua/stream-rec
-  /// 服务端代码：https://github.com/lovelyyoshino/douyin_python，请自行部署后使用
   /// 自部署 https://github.com/SlotSun/simple_live_api
   Future<String> getSignature(String roomId, String uniqueId) async {
     try {
@@ -228,20 +227,16 @@ class DouyinDanmaku implements LiveDanmaku {
         "ac": "",
         "identity": "audience",
       };
-      JsEngine.init();
-      await JsEngine.loadJSFile(
-          'packages/simple_live_core/assets/js/douyin-webmssdk.js');
-      String sigParam = params.entries
-          .map((entry) => '${entry.key}=${entry.value}')
-          .join(',');
+      String sigParam = params.entries.map((entry) => '${entry.key}=${entry.value}').join(',');
       var md5SigParam = md5.convert(utf8.encode(sigParam)).toString();
-      var jsEvalResult = JsEngine.evaluate("get_sign('$md5SigParam')");
-      return jsEvalResult.toString();
+      var signature = generateXBogus(
+        md5SigParam,
+        1, // counter
+      );
+      return signature;
     } catch (e) {
       CoreLog.error(e);
       return "";
-    } finally {
-      JsEngine.dispose();
-    }
+    } finally {}
   }
 }

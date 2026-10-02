@@ -1,6 +1,7 @@
 import 'package:get/get.dart';
 import 'package:hive_ce/hive_ce.dart';
 import 'package:simple_live_app/app/utils/dynamic_filter.dart';
+import 'package:simple_live_app/models/db/follow_snapshot.dart';
 
 part 'follow_user.g.dart';
 
@@ -21,6 +22,7 @@ class FollowUser implements Mappable {
     this.watchDurationSec = 0,
     this.deleted = false,
     this.updateTime = 0,
+    this.lastWatchTime = 0,
   });
 
   ///id=siteId_roomId
@@ -42,6 +44,7 @@ class FollowUser implements Mappable {
   @HiveField(5)
   DateTime addTime;
 
+  @Deprecated('Use watchDurationSec instead')
   @HiveField(6)
   String? watchDuration; // "00:00:00"
 
@@ -67,6 +70,10 @@ class FollowUser implements Mappable {
   /// 墓碑更新时间（秒级时间戳），用于定期清理
   @HiveField(13, defaultValue: 0)
   int updateTime;
+
+  // 最后一次观看
+  @HiveField(14, defaultValue: 0)
+  int? lastWatchTime;
 
   /// 直播状态
   /// 0=未知(加载中) 1=未开播 2=直播中
@@ -98,6 +105,7 @@ class FollowUser implements Mappable {
         watchDurationSec: json["watchDurationSec"] ?? 0,
         deleted: json["deleted"] ?? false,
         updateTime: json["updateTime"] ?? 0,
+        lastWatchTime: json["lastWatchTime"] ?? 0,
       );
 
   Map<String, dynamic> toJson() => {
@@ -115,8 +123,24 @@ class FollowUser implements Mappable {
         "watchDurationSec": watchDurationSec,
         "deleted": deleted,
         "updateTime": updateTime,
+        "lastWatchTime": lastWatchTime,
       };
 
   @override
   Map<String, dynamic> toMap() => toJson();
+
+  FollowSnapshotItem toSnapshot() => FollowSnapshotItem(
+        id: id,
+        liveStatus: liveStatus.value,
+        cover: cover.value,
+        title: title.value,
+        online: online.value,
+      );
+
+  void applySnapshot(FollowSnapshotItem snapshot) {
+    liveStatus.value = snapshot.liveStatus;
+    cover.value = snapshot.cover;
+    title.value = snapshot.title;
+    online.value = snapshot.online;
+  }
 }

@@ -2,11 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
 import 'package:html_unescape/html_unescape.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
-import 'package:simple_live_core/src/common/js_engine.dart';
 import 'package:simple_live_core/src/platforms/douyu/douyu_utils.dart';
 
 class DouyuSite implements LiveSite {
@@ -15,6 +13,12 @@ class DouyuSite implements LiveSite {
 
   @override
   String name = "斗鱼直播";
+
+  String _cookie = '';
+
+  String _dy_did = '';
+
+  String _ltp0 = '';
 
   @override
   LiveDanmaku getDanmaku() => DouyuDanmaku();
@@ -78,22 +82,14 @@ class DouyuSite implements LiveSite {
   }
 
   @override
-  Future<List<LivePlayQuality>> getPlayQualites(
-      {required LiveRoomDetail detail}) async {
-    var data = await DouyuUtils.sign(detail.roomId);
+  Future<List<LivePlayQuality>> getPlayQualites({required LiveRoomDetail detail}) async {
+    var data = await DouyuUtils.sign(detail.roomId, cookie: _cookie);
     List<LivePlayQuality> qualities = [];
     var result = await HttpClient.instance.postJson(
       "https://www.douyu.com/lapi/live/getH5PlayV1/${detail.roomId}",
       data: data,
       formUrlEncoded: true,
-        header: {
-          'accept':
-          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'accept-encoding': "gzip, deflate",
-          'accept-language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
-          'user-agent':
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43"
-        }
+      header: DouyuUtils.requestHeader(roomId: detail.roomId, cookie: _cookie),
     );
 
     var cdns = <String>[];
@@ -130,6 +126,12 @@ class DouyuSite implements LiveSite {
     for (var item in data.cdns) {
       var url = await getPlayUrl(detail.roomId, data.rate, item);
       if (url.isNotEmpty) {
+        // if expire=300 and cdn is ws then add &expire=0
+        // user must be live in oversea
+        // cookie is better, cookie needs refreshed every 7 days
+        if(url.contains('expire=300') && url.contains('fcdn=ws')){
+          url = '$url&expire=0';
+        }
         urls.add(url);
       }
     }
@@ -137,19 +139,13 @@ class DouyuSite implements LiveSite {
   }
 
   Future<String> getPlayUrl(String roomId, int rate, String cdn) async {
-    var sign = await DouyuUtils.sign(roomId, rate: rate, cdn: cdn);
+    var sign = await DouyuUtils.sign(roomId, rate: rate, cdn: cdn, cookie: _cookie);
     var result = await HttpClient.instance.postJson(
-        "https://www.douyu.com/lapi/live/getH5PlayV1/$roomId",
-        data: sign,
-        formUrlEncoded: true,
-        header: {
-          'accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'accept-encoding': "gzip, deflate",
-          'accept-language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
-          'user-agent':
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43"
-        });
+      "https://www.douyu.com/lapi/live/getH5PlayV1/$roomId",
+      data: sign,
+      formUrlEncoded: true,
+      header: DouyuUtils.requestHeader(roomId: roomId, cookie: _cookie),
+    );
 
     return "${result["data"]["rtmp_url"]}/${HtmlUnescape().convert(result["data"]["rtmp_live"].toString())}";
   }
@@ -331,47 +327,6 @@ class DouyuSite implements LiveSite {
         !roomInfo["room_name"].startsWith("【回放】");
   }
 
-  Future<String> getPlayArgs(String html, String rid) async {
-    //取加密的js
-    html = RegExp(
-                r"(vdwdae325w_64we[\s\S]*function ub98484234[\s\S]*?)function",
-                multiLine: true)
-            .firstMatch(html)
-            ?.group(1) ??
-        "";
-    // 防空
-    if (html == "") {
-      return "";
-    }
-    //去掉eval
-    html = html.replaceAll(RegExp(r"eval.*?;}"), "strc;}");
-
-    try {
-      var did = '10000000000000000000000000001501';
-      JsEngine.init();
-      var jsEvalResult = JsEngine.evaluate("$html;ub98484234();");
-      var res = jsEvalResult.toString();
-      String t10 = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
-      RegExp vReg = RegExp(r'v=(\d+)');
-      Match? vMatch = vReg.firstMatch(res);
-      String? v = vMatch?.group(1);
-      String rb =
-          md5.convert(utf8.encode(rid + did + t10 + (v ?? ""))).toString();
-      String jsSign = res
-          .replaceAll(RegExp(r'return rt;}\);?'), 'return rt;}')
-          .replaceAll('(function (', 'function sign(')
-          .replaceAll('CryptoJS.MD5(cb).toString()', '"$rb"');
-      var params = JsEngine.evaluate("$jsSign;sign($rid,'$did',$t10);");
-      return params.toString();
-    } catch (e) {
-      CoreLog.error(e);
-      return "";
-    } finally {
-      JsEngine.dispose();
-    }
-    // 自部署：https://github.com/SlotSun/simple_live_api
-  }
-
   int parseHotNum(String hn) {
     try {
       var num = double.parse(hn.replaceAll("万", ""));
@@ -389,6 +344,19 @@ class DouyuSite implements LiveSite {
       {required String roomId}) {
     //尚不支持
     return Future.value([]);
+  }
+
+  Future<String> refreshCookie(String dy_did, String ltp0) async {
+    var newCookie = await DouyuUtils.refreshCookie(did: dy_did, ltp0: ltp0, cookie: _cookie);
+    _cookie = newCookie;
+    return newCookie;
+  }
+
+  @override
+  Future<void> setSiteAttrs(Map<String, dynamic> data) async {
+    if(data.containsKey('cookie')){
+      _cookie = data['cookie'] as String;
+    }
   }
 }
 
