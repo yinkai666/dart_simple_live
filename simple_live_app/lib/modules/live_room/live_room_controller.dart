@@ -46,6 +46,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Timer? _recoveryVerificationTimer;
   Timer? _playbackMonitor;
   StreamSubscription<bool>? _recoveryPlaySubscription;
+  RecoveryPlayIntent? _pendingRecoveryPlayIntent;
+  bool _recoveryOpenedPaused = false;
   bool _recovering = false;
   bool _recoveryFailed = false;
   bool _failureDuringRecovery = false;
@@ -340,6 +342,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void onWSMessage(LiveMessage msg) async {
     if (_roomClosed || followUserBlock.value == null) return;
     if (msg.type == LiveMessageType.chat) {
+      // Reject abnormal payloads before regex work, history retention and FFI.
+      if (msg.message.length > 2048) return;
       // 关键词屏蔽检查
       for (var keyword in AppSettingsController.instance.shieldList) {
         Pattern? pattern;
@@ -722,9 +726,29 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _schedulePlaybackRecovery('播放连接异常');
   }
 
-  void _resetPlaybackRecovery() {
+  void _clearRecoveryPlayIntent() {
     _recoveryPlaySubscription?.cancel();
     _recoveryPlaySubscription = null;
+    _pendingRecoveryPlayIntent = null;
+  }
+
+  RecoveryPlayIntent _ensureRecoveryPlayIntent() {
+    final existing = _pendingRecoveryPlayIntent;
+    if (existing != null) return existing;
+    final intent = RecoveryPlayIntent(initiallyPlaying: player.state.playing);
+    _pendingRecoveryPlayIntent = intent;
+    final roomGeneration = _roomTasks.current;
+    _recoveryPlaySubscription = player.stream.playing.listen((playing) {
+      if (_roomTasks.isCurrent(roomGeneration) && identical(_pendingRecoveryPlayIntent, intent)) {
+        intent.observe(playing: playing, completed: player.state.completed);
+      }
+    });
+    return intent;
+  }
+
+  void _resetPlaybackRecovery() {
+    _clearRecoveryPlayIntent();
+    _recoveryOpenedPaused = false;
     _recoveryTimer?.cancel();
     _recoveryTimer = null;
     _recoveryVerificationTimer?.cancel();
@@ -738,10 +762,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void _monitorPlayback() {
     if (_roomClosed || !_playlistReady) return;
     final state = player.state;
+    if (state.playing) _recoveryOpenedPaused = false;
     final now = DateTime.now();
     final eligible = !isBackground && state.playing && !state.buffering && !_recovery.busy;
     if (_recovery.observeProgress(state.position, now, eligible: eligible) && _recovering) {
       _recovering = false;
+      _clearRecoveryPlayIntent();
       _recoveryFailed = false;
       _recoveryTimer?.cancel();
       _recoveryTimer = null;
@@ -758,8 +784,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void _schedulePlaybackRecovery(String reason) {
-    if (_roomClosed || !_playlistReady || isBackground || _recoveryFailed || _recovery.busy) return;
+    if (_roomClosed || !_playlistReady || _recoveryFailed) return;
+    final mayRequest = _recovery.request(background: isBackground);
     _recovering = true;
+    if (_recovery.busy) return;
+    _ensureRecoveryPlayIntent();
+    if (!mayRequest) return;
+    if (_recoveryOpenedPaused && !player.state.playing) return;
     if (_recovery.exhausted) {
       _showRecoveryFailed();
       return;
@@ -792,11 +823,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     var opened = false;
     var openedPaused = false;
     _failureDuringRecovery = false;
-    final playIntent = RecoveryPlayIntent(initiallyPlaying: player.state.playing);
-    final intentSubscription = player.stream.playing.listen((playing) {
-      if (current()) playIntent.observe(playing: playing, completed: player.state.completed);
-    });
-    _recoveryPlaySubscription = intentSubscription;
+    final playIntent = _ensureRecoveryPlayIntent();
     addSysMsg('$reason，正在尝试恢复（${_recovery.attempts}/${PlaybackRecovery.maxAttempts}）');
     try {
       final result = await site.liveSite
@@ -812,9 +839,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       currentLineIndex = recoveryLineIndex(selectedLine, playUrls.length, _recovery.attempts);
       await initPlaylist(playGeneration, roomGeneration, shouldPlay: () {
         // Stop observing before native open emits its own stop/play sequence.
-        intentSubscription.cancel();
+        _clearRecoveryPlayIntent();
         final play = playIntent.beginOpen();
         openedPaused = !play;
+        _recoveryOpenedPaused = openedPaused;
         return play;
       });
       if (!current()) return;
@@ -822,8 +850,6 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     } catch (e) {
       if (current()) Log.logPrint(e);
     } finally {
-      intentSubscription.cancel();
-      if (identical(_recoveryPlaySubscription, intentSubscription)) _recoveryPlaySubscription = null;
       if (current()) {
         _recovery.finish(recoveryToken, DateTime.now());
         if (opened) {
@@ -848,6 +874,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void _showRecoveryFailed() {
     if (_recoveryFailed) return;
     _recoveryFailed = true;
+    _clearRecoveryPlayIntent();
     _recoveryTimer?.cancel();
     _recoveryTimer = null;
     _recoveryVerificationTimer?.cancel();
@@ -1480,8 +1507,6 @@ ${error?.stackTrace}''');
       //进入后台，关闭弹幕
       danmakuController?.clear();
       isBackground = true;
-      _recoveryPlaySubscription?.cancel();
-      _recoveryPlaySubscription = null;
       _recoveryTimer?.cancel();
       _recoveryTimer = null;
       _recoveryVerificationTimer?.cancel();
@@ -1495,7 +1520,7 @@ ${error?.stackTrace}''');
       Log.d("返回前台");
       danmakuController?.resume();
       isBackground = false;
-      if (_recovering && !_recoveryFailed) _schedulePlaybackRecovery('返回前台后恢复播放');
+      if (_recovery.pending && !_recoveryFailed) _schedulePlaybackRecovery('返回前台后恢复播放');
     }
   }
 

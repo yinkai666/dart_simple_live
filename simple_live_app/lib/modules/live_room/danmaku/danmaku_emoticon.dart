@@ -109,6 +109,29 @@ class DanmakuEmoticonBitmap {
   });
 }
 
+const kMaxLiveDanmakuBitmapBytes = 16 * 1024 * 1024;
+
+/// Conservative RGBA estimate: shared clones count separately so this never
+/// relies on undocumented native texture deduplication to admit more images.
+int liveDanmakuBitmapBytes(Iterable<DanmakuItem<dynamic>> items) {
+  var bytes = 0;
+  for (final item in items) {
+    final image = item.image;
+    if (!item.expired && image != null) bytes += image.width * image.height * 4;
+  }
+  return bytes;
+}
+
+bool fitsLiveDanmakuBitmapBudget(
+  Iterable<DanmakuItem<dynamic>> items, {
+  required int addedBytes,
+  int replacedBytes = 0,
+  int maxBytes = kMaxLiveDanmakuBitmapBytes,
+}) =>
+    addedBytes >= 0 &&
+    replacedBytes >= 0 &&
+    math.max(0, liveDanmakuBitmapBytes(items) - replacedBytes) + addedBytes <= maxBytes;
+
 /// 缓存世代：[DanmakuEmoticonRenderer.clearCache] 时自增。
 ///
 /// 在途的取图 / 合成在写回缓存前核对世代，否则「退出直播间清空缓存之后，
@@ -219,6 +242,18 @@ class DanmakuEmoticonRenderer {
   @visibleForTesting
   static List<ui.Image> get debugCachedSourceImages => _ImageHandleCache.debugCachedImages;
 
+  @visibleForTesting
+  static int get debugSourceBytes => _ImageHandleCache.bytes;
+  @visibleForTesting
+  static int get debugCompositeBytes => _CompositeCache.bytes;
+  @visibleForTesting
+  static int get debugActiveRenders => _activeRenders;
+
+  static int _activeRenders = 0;
+  static const _maxActiveRenders = 32;
+  static const _maxBitmapBytes = 2 * 1024 * 1024;
+  static const _maxBitmapDimension = 4096;
+
   /// [DanmakuContentItem.extra] 是否符合表情弹幕的载荷约定
   static bool canRender(Object? extra) {
     return extra is List<LiveMessageEmoticon> && extra.isNotEmpty;
@@ -236,6 +271,8 @@ class DanmakuEmoticonRenderer {
     DanmakuEmoticonBitmap? bitmap;
     var handedOver = false;
     try {
+      // The canvas may reject a crowded track before asynchronous image work.
+      if (_findItem(controller, content) == null) return;
       bitmap = await render(
         text: content.text,
         emoticons: emoticons,
@@ -248,6 +285,15 @@ class DanmakuEmoticonRenderer {
 
       final item = _findItem(controller, content);
       if (item == null) {
+        return;
+      }
+
+      final oldImage = item.image;
+      if (!fitsLiveDanmakuBitmapBudget(
+        controller.scrollDanmaku.followedBy(controller.staticDanmaku),
+        addedBytes: bitmap.image.width * bitmap.image.height * 4,
+        replacedBytes: oldImage == null ? 0 : oldImage.width * oldImage.height * 4,
+      )) {
         return;
       }
 
@@ -281,12 +327,40 @@ class DanmakuEmoticonRenderer {
     required DanmakuOption option,
     required Color color,
   }) async {
+    // Bound cached-image hits too: pending-network limits do not cover them.
+    // Do not queue excess work; the existing text image is the fallback.
+    if (_activeRenders >= _maxActiveRenders ||
+        text.length > 2048 ||
+        emoticons.length > 64 ||
+        !option.fontSize.isFinite ||
+        option.fontSize <= 0 ||
+        option.fontSize > 240 ||
+        !option.strokeWidth.isFinite ||
+        option.strokeWidth < 0 ||
+        option.strokeWidth > 32) {
+      return null;
+    }
+    _activeRenders++;
+    try {
+      return await _render(text: text, emoticons: emoticons, option: option, color: color);
+    } finally {
+      _activeRenders--;
+    }
+  }
+
+  static Future<DanmakuEmoticonBitmap?> _render({
+    required String text,
+    required List<LiveMessageEmoticon> emoticons,
+    required DanmakuOption option,
+    required Color color,
+  }) async {
     final segments = splitDanmakuSegments(text, emoticons);
     if (!segments.any((e) => e is DanmakuEmoticonSegment)) {
       return null;
     }
 
     final emoteSegments = segments.whereType<DanmakuEmoticonSegment>().toList(growable: false);
+    if (segments.length > 128 || emoteSegments.length > 64) return null;
     final generation = _cacheGeneration;
     final dpr = _devicePixelRatio();
     // 每个句柄都由调用方负责归还（见 [_ImageHandleCache.load]）：栅格化一结束
@@ -390,147 +464,168 @@ class DanmakuEmoticonRenderer {
     final emoteGap = fontSize * _emoteGapScale;
 
     final paragraphs = <ui.Paragraph>[];
-    final emotes = <_PlacedEmoticon>[];
-    // 左右各留 strokeWidth / 2：描边会向字形外扩 strokeWidth / 2，只留一侧会把
-    // 最右侧字形的描边裁掉，还会让内容相对预留框整体偏移
-    var width = strokeWidth / 2;
-    var maxEmoteHeight = 0.0;
-    var placedAny = false;
-    var lastWasEmote = false;
-
-    for (final segment in segments) {
-      switch (segment) {
-        case DanmakuTextSegment(:final text):
-          // 表情与文字之间两侧都要有间隙：只在表情前插会让 `[doge]你好` 紧贴，
-          // 与聊天区左右对称的 Padding 口径不一致
-          if (placedAny && lastWasEmote) {
-            width += emoteGap;
-          }
-          final paragraph = _buildParagraph(
-            text,
-            fontSize: fontSize,
-            fontWeight: fontWeight,
-            fontFamily: fontFamily,
-            color: color,
-          );
-          paragraphs.add(paragraph);
-          emotes.add(_PlacedEmoticon(
-            paragraph: paragraph,
-            text: text,
-            x: width,
-          ));
-          width += paragraph.maxIntrinsicWidth;
-          placedAny = true;
-          lastWasEmote = false;
-        case _ResolvedEmoticonSegment(:final emoticon, :final image):
-          if (placedAny) {
-            width += emoteGap;
-          }
-          // 大表情按物理像素换回逻辑像素，会比单行高出一截，最多允许占两个轨道。
-          // 弹幕库的轨道是等高网格、不认单条高度，所以哪怕只占两轨也会与相邻轨道
-          // 重叠，这是上游确认过的取舍。
-          final h = emoticon.large
-              ? emoteDisplayHeight(
-                  emoticon,
-                  fontSize: fontSize,
-                  dpr: devicePixelRatio,
-                  maxHeight: (lineBox + strokeWidth) * kMaxEmoteLines,
-                )
-              : math.min(fontSize * _emoteScale, lineBox);
-          if (h > maxEmoteHeight) {
-            maxEmoteHeight = h;
-          }
-          final emoteWidth = h * _aspectRatio(emoticon, image.image);
-          emotes.add(_PlacedEmoticon(
-            image: image.image,
-            x: width,
-            width: emoteWidth,
-            height: h,
-          ));
-          width += emoteWidth;
-          placedAny = true;
-          lastWasEmote = true;
-        case DanmakuEmoticonSegment():
-          // 取不到图的表情在 render() 里已经转成了文本片段，这里不会出现
-          break;
-      }
-    }
-
-    final totalWidth = width + strokeWidth / 2;
-    final contentHeight = math.max(lineBox, maxEmoteHeight);
-    final totalHeight = contentHeight + strokeWidth;
-    final textOffsetY = strokeWidth / 2 + (contentHeight - lineBox) / 2;
-
-    final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder)..scale(devicePixelRatio);
-    final imagePaint = Paint()..filterQuality = FilterQuality.medium;
-
-    for (final placed in emotes) {
-      final paragraph = placed.paragraph;
-      if (paragraph != null) {
-        if (strokeWidth > 0) {
-          // 复刻弹幕库的描边：文本有黑描边，图片字形不适用
-          final strokePaint = Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = strokeWidth
-            ..color = const Color(0xFF000000);
-          final strokeParagraph = _buildParagraph(
-            placed.text!,
-            fontSize: fontSize,
-            fontWeight: fontWeight,
-            fontFamily: fontFamily,
-            foreground: strokePaint,
-          );
-          canvas.drawParagraph(strokeParagraph, Offset(placed.x, textOffsetY));
-          strokeParagraph.dispose();
-        }
-        canvas.drawParagraph(paragraph, Offset(placed.x, textOffsetY));
-        continue;
-      }
-
-      final image = placed.image!;
-      canvas.drawImageRect(
-        image,
-        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-        Rect.fromLTWH(
-          placed.x,
-          strokeWidth / 2 + (contentHeight - placed.height) / 2,
-          placed.width,
-          placed.height,
-        ),
-        imagePaint,
-      );
-    }
-
-    final picture = recorder.endRecording();
-    final ui.Image rasterized;
+    ui.PictureRecorder? recording;
     try {
-      rasterized = picture.toImageSync(
-        (totalWidth * devicePixelRatio).ceil(),
-        (totalHeight * devicePixelRatio).ceil(),
+      final emotes = <_PlacedEmoticon>[];
+      // 左右各留 strokeWidth / 2：描边会向字形外扩 strokeWidth / 2，只留一侧会把
+      // 最右侧字形的描边裁掉，还会让内容相对预留框整体偏移
+      var width = strokeWidth / 2;
+      var maxEmoteHeight = 0.0;
+      var placedAny = false;
+      var lastWasEmote = false;
+
+      for (final segment in segments) {
+        switch (segment) {
+          case DanmakuTextSegment(:final text):
+            // 表情与文字之间两侧都要有间隙：只在表情前插会让 `[doge]你好` 紧贴，
+            // 与聊天区左右对称的 Padding 口径不一致
+            if (placedAny && lastWasEmote) {
+              width += emoteGap;
+            }
+            final paragraph = _buildParagraph(
+              text,
+              fontSize: fontSize,
+              fontWeight: fontWeight,
+              fontFamily: fontFamily,
+              color: color,
+            );
+            paragraphs.add(paragraph);
+            emotes.add(_PlacedEmoticon(
+              paragraph: paragraph,
+              text: text,
+              x: width,
+            ));
+            width += paragraph.maxIntrinsicWidth;
+            placedAny = true;
+            lastWasEmote = false;
+          case _ResolvedEmoticonSegment(:final emoticon, :final image):
+            if (placedAny) {
+              width += emoteGap;
+            }
+            // 大表情按物理像素换回逻辑像素，会比单行高出一截，最多允许占两个轨道。
+            // 弹幕库的轨道是等高网格、不认单条高度，所以哪怕只占两轨也会与相邻轨道
+            // 重叠，这是上游确认过的取舍。
+            final h = emoticon.large
+                ? emoteDisplayHeight(
+                    emoticon,
+                    fontSize: fontSize,
+                    dpr: devicePixelRatio,
+                    maxHeight: (lineBox + strokeWidth) * kMaxEmoteLines,
+                  )
+                : math.min(fontSize * _emoteScale, lineBox);
+            if (h > maxEmoteHeight) {
+              maxEmoteHeight = h;
+            }
+            final emoteWidth = h * _aspectRatio(emoticon, image.image);
+            emotes.add(_PlacedEmoticon(
+              image: image.image,
+              x: width,
+              width: emoteWidth,
+              height: h,
+            ));
+            width += emoteWidth;
+            placedAny = true;
+            lastWasEmote = true;
+          case DanmakuEmoticonSegment():
+            // 取不到图的表情在 render() 里已经转成了文本片段，这里不会出现
+            break;
+        }
+      }
+
+      final totalWidth = width + strokeWidth / 2;
+      final contentHeight = math.max(lineBox, maxEmoteHeight);
+      final totalHeight = contentHeight + strokeWidth;
+      final textOffsetY = strokeWidth / 2 + (contentHeight - lineBox) / 2;
+
+      final pixelWidth = totalWidth * devicePixelRatio;
+      final pixelHeight = totalHeight * devicePixelRatio;
+      if (!pixelWidth.isFinite ||
+          !pixelHeight.isFinite ||
+          pixelWidth <= 0 ||
+          pixelHeight <= 0 ||
+          pixelWidth > _maxBitmapDimension ||
+          pixelHeight > _maxBitmapDimension ||
+          pixelWidth.ceil() * pixelHeight.ceil() * 4 > _maxBitmapBytes) {
+        return null;
+      }
+
+      final recorder = ui.PictureRecorder();
+      recording = recorder;
+      final canvas = ui.Canvas(recorder)..scale(devicePixelRatio);
+      final imagePaint = Paint()..filterQuality = FilterQuality.medium;
+
+      for (final placed in emotes) {
+        final paragraph = placed.paragraph;
+        if (paragraph != null) {
+          if (strokeWidth > 0) {
+            // 复刻弹幕库的描边：文本有黑描边，图片字形不适用
+            final strokePaint = Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = strokeWidth
+              ..color = const Color(0xFF000000);
+            final strokeParagraph = _buildParagraph(
+              placed.text!,
+              fontSize: fontSize,
+              fontWeight: fontWeight,
+              fontFamily: fontFamily,
+              foreground: strokePaint,
+            );
+            try {
+              canvas.drawParagraph(strokeParagraph, Offset(placed.x, textOffsetY));
+            } finally {
+              strokeParagraph.dispose();
+            }
+          }
+          canvas.drawParagraph(paragraph, Offset(placed.x, textOffsetY));
+          continue;
+        }
+
+        final image = placed.image!;
+        canvas.drawImageRect(
+          image,
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(
+            placed.x,
+            strokeWidth / 2 + (contentHeight - placed.height) / 2,
+            placed.width,
+            placed.height,
+          ),
+          imagePaint,
+        );
+      }
+
+      final picture = recorder.endRecording();
+      final ui.Image rasterized;
+      try {
+        rasterized = picture.toImageSync(
+          pixelWidth.ceil(),
+          pixelHeight.ceil(),
+        );
+      } finally {
+        picture.dispose();
+      }
+
+      _CompositeCache.put(
+        key,
+        DanmakuEmoticonBitmap(
+          image: rasterized,
+          width: totalWidth,
+          height: totalHeight,
+        ),
+      );
+
+      // 缓存持有本体，调用方拿到的是可以单独释放的克隆
+      return DanmakuEmoticonBitmap(
+        image: rasterized.clone(),
+        width: totalWidth,
+        height: totalHeight,
       );
     } finally {
-      picture.dispose();
+      if (recording?.isRecording == true) recording!.endRecording().dispose();
       for (final paragraph in paragraphs) {
         paragraph.dispose();
       }
     }
-
-    _CompositeCache.put(
-      key,
-      DanmakuEmoticonBitmap(
-        image: rasterized,
-        width: totalWidth,
-        height: totalHeight,
-      ),
-    );
-
-    // 缓存持有本体，调用方拿到的是可以单独释放的克隆
-    return DanmakuEmoticonBitmap(
-      image: rasterized.clone(),
-      width: totalWidth,
-      height: totalHeight,
-    );
   }
 
   /// 释放表情图片与合成位图缓存。
@@ -658,12 +753,12 @@ class DanmakuEmoticonRenderer {
     DanmakuContentItem content,
   ) {
     for (final item in controller.scrollDanmaku) {
-      if (identical(item.content, content)) {
+      if (!item.expired && identical(item.content, content)) {
         return item;
       }
     }
     for (final item in controller.staticDanmaku) {
-      if (identical(item.content, content)) {
+      if (!item.expired && identical(item.content, content)) {
         return item;
       }
     }
@@ -712,6 +807,8 @@ class _PlacedEmoticon {
 ///   那一份（见 [DanmakuEmoticonRenderer.render]）。
 class _ImageHandleCache {
   static const int _maxEntries = 128;
+  static const int _maxBytes = 16 * 1024 * 1024;
+  static int bytes = 0;
   static const int _maxPending = 32;
   static const int _maxWaiters = 256;
   static const Duration _loadTimeout = Duration(seconds: 10);
@@ -745,10 +842,23 @@ class _ImageHandleCache {
   }
 
   static void _put(String key, ImageInfo info) {
-    _cache.remove(key)?.dispose();
+    void remove(String key) {
+      final old = _cache.remove(key);
+      if (old == null) return;
+      bytes -= old.image.width * old.image.height * 4;
+      old.dispose();
+    }
+
+    remove(key);
+    final size = info.image.width * info.image.height * 4;
+    if (size > _maxBytes) {
+      info.dispose();
+      return;
+    }
     _cache[key] = info;
-    while (_cache.length > _maxEntries) {
-      _cache.remove(_cache.keys.first)?.dispose();
+    bytes += size;
+    while (_cache.length > _maxEntries || bytes > _maxBytes) {
+      remove(_cache.keys.first);
     }
   }
 
@@ -830,6 +940,7 @@ class _ImageHandleCache {
       info.dispose();
     }
     _cache.clear();
+    bytes = 0;
   }
 
   /// 仅供测试：当前缓存持有的源图句柄。
@@ -839,6 +950,8 @@ class _ImageHandleCache {
 /// 合成位图缓存，命中时用 [ui.Image.clone] 分发独立句柄。
 class _CompositeCache {
   static const int _maxEntries = 64;
+  static const int _maxBytes = 16 * 1024 * 1024;
+  static int bytes = 0;
 
   static final LinkedHashMap<String, DanmakuEmoticonBitmap> _cache = LinkedHashMap();
 
@@ -852,11 +965,18 @@ class _CompositeCache {
   }
 
   static void put(String key, DanmakuEmoticonBitmap bitmap) {
-    _cache.remove(key)?.image.dispose();
+    void remove(String key) {
+      final old = _cache.remove(key);
+      if (old == null) return;
+      bytes -= old.image.width * old.image.height * 4;
+      old.image.dispose();
+    }
+
+    remove(key);
     _cache[key] = bitmap;
-    while (_cache.length > _maxEntries) {
-      final oldest = _cache.keys.first;
-      _cache.remove(oldest)?.image.dispose();
+    bytes += bitmap.image.width * bitmap.image.height * 4;
+    while (_cache.length > _maxEntries || bytes > _maxBytes) {
+      remove(_cache.keys.first);
     }
   }
 
@@ -865,6 +985,7 @@ class _CompositeCache {
       bitmap.image.dispose();
     }
     _cache.clear();
+    bytes = 0;
   }
 }
 

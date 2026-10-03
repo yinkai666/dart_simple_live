@@ -24,6 +24,7 @@ import 'package:simple_live_app/app/custom_throttle.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
+import 'package:simple_live_app/modules/live_room/danmaku/danmaku_admission.dart';
 import 'package:simple_live_app/modules/live_room/player/room_task_scope.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -119,7 +120,7 @@ mixin PlayerMixin {
             vo: AppSettingsController.instance.videoOutputDriver.value,
             hwdec: AppSettingsController.instance.videoHardwareDecoder.value,
           )
-        : AppSettingsController.instance.playerCompatMode.value
+        : Platform.isAndroid && AppSettingsController.instance.playerCompatMode.value
             ? const VideoControllerConfiguration(
                 vo: 'mediacodec_embed',
                 hwdec: 'mediacodec',
@@ -253,6 +254,8 @@ mixin PlayerStateMixin on PlayerMixin {
   }
 }
 mixin PlayerDanmakuMixin on PlayerStateMixin {
+  final _danmakuAdmission = DanmakuAdmission();
+
   /// 弹幕控制器
   DanmakuController? danmakuController;
 
@@ -273,8 +276,17 @@ mixin PlayerDanmakuMixin on PlayerStateMixin {
     if (!showDanmakuState.value) {
       return;
     }
+    final controller = danmakuController;
+    if (controller == null) return;
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    final dpr = views.isEmpty ? 1.0 : views.first.devicePixelRatio;
     for (var item in items) {
-      danmakuController?.addDanmaku(item);
+      if (!_danmakuAdmission.allow()) break;
+      final bytes = estimateDanmakuBytes(item, controller.option, dpr);
+      if (bytes == null) continue;
+      if (!fitsLiveDanmakuBitmapBudget([...controller.scrollDanmaku, ...controller.staticDanmaku], addedBytes: bytes))
+        break;
+      controller.addDanmaku(item);
       _applyDanmakuEmoticon(item);
     }
   }

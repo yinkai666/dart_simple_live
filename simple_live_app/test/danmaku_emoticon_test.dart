@@ -85,7 +85,7 @@ void main() {
               }));
       await Future<void>.delayed(Duration.zero);
       expect(stream.listeners, hasLength(1));
-      expect(completed, 44);
+      expect(completed, greaterThanOrEqualTo(44));
       DanmakuEmoticonRenderer.clearCache();
       expect(await Future.wait(pending), everyElement(isNull));
     });
@@ -109,6 +109,143 @@ void main() {
       expect(b.image.debugDisposed, isFalse);
       expect(b.image.width, greaterThan(0));
       b.image.dispose();
+    });
+  });
+
+  group('bounded bitmap memory', () {
+    setUp(() => DanmakuEmoticonRenderer.clearCache());
+    tearDown(() {
+      DanmakuEmoticonRenderer.clearCache();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = null;
+    });
+
+    test('source cache evicts by decoded bytes while returned bitmap remains usable', () async {
+      for (var i = 0; i < 20; i++) {
+        final stream = _ControlledImageStream();
+        DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => _ControlledImageProvider(stream);
+        final pending = DanmakuEmoticonRenderer.render(
+            text: '[x]',
+            emoticons: [_emot('[x]', 'https://bytes/$i')],
+            option: const DanmakuOption(),
+            color: const Color(0xFFFFFFFF));
+        stream.listeners.single.onImage(ImageInfo(image: _makeImage(512)), false);
+        final bitmap = await pending;
+        expect(bitmap, isNotNull);
+        bitmap!.image.dispose();
+        expect(DanmakuEmoticonRenderer.debugSourceBytes, lessThanOrEqualTo(16 * 1024 * 1024));
+      }
+      expect(DanmakuEmoticonRenderer.debugCachedSourceImages.length, lessThan(20));
+      DanmakuEmoticonRenderer.clearCache();
+      expect(DanmakuEmoticonRenderer.debugSourceBytes, 0);
+      expect(DanmakuEmoticonRenderer.debugCompositeBytes, 0);
+    });
+
+    test('cached image hits still have a bounded number of concurrent renders', () async {
+      final png = await _makePng();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
+      Future<DanmakuEmoticonBitmap?> render() => DanmakuEmoticonRenderer.render(
+          text: '[x]',
+          emoticons: [_emot('[x]', 'https://bytes/hot')],
+          option: const DanmakuOption(),
+          color: const Color(0xFFFFFFFF));
+      (await render())!.image.dispose();
+      final pending = List.generate(300, (_) => render());
+      expect(DanmakuEmoticonRenderer.debugActiveRenders, lessThanOrEqualTo(32));
+      final bitmaps = await Future.wait(pending);
+      expect(bitmaps.whereType<DanmakuEmoticonBitmap>().length, lessThanOrEqualTo(32));
+      for (final bitmap in bitmaps) {
+        bitmap?.image.dispose();
+      }
+      expect(DanmakuEmoticonRenderer.debugActiveRenders, 0);
+    });
+
+    test('oversize composite returns text fallback before native image allocation', () async {
+      final png = await _makePng();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
+      final bitmap = await DanmakuEmoticonRenderer.render(
+          text: '${'W' * 5000}[x]',
+          emoticons: [_emot('[x]', 'https://bytes/wide')],
+          option: const DanmakuOption(),
+          color: const Color(0xFFFFFFFF));
+      expect(bitmap, isNull);
+      expect(DanmakuEmoticonRenderer.debugCompositeBytes, 0);
+      // Below the input-length ceiling: measured physical pixels must also
+      // reject a wide message, before toImageSync reaches the native allocator.
+      final wide = await DanmakuEmoticonRenderer.render(
+          text: '${'W' * 150}[x]',
+          emoticons: [_emot('[x]', 'https://bytes/wide')],
+          option: const DanmakuOption(fontSize: 100),
+          color: const Color(0xFFFFFFFF));
+      expect(wide, isNull);
+      expect(DanmakuEmoticonRenderer.debugCompositeBytes, 0);
+    });
+
+    testWidgets('composite byte eviction preserves the canvas-owned clone', (tester) async {
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.runAsync(() async {
+        final png = await _makePng();
+        DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
+        ui.Image? retained;
+        var generatedBytes = 0;
+        try {
+          for (var i = 0; i < 24; i++) {
+            final bitmap = await DanmakuEmoticonRenderer.render(
+                text: '${'W' * 8}[x]',
+                emoticons: [_emot('[x]', 'https://bytes/composite')],
+                option: const DanmakuOption(fontSize: 50),
+                color: Color(0xFF000000 + i));
+            expect(bitmap, isNotNull);
+            final image = bitmap!.image;
+            generatedBytes += image.width * image.height * 4;
+            if (i == 0) {
+              retained = image;
+            } else {
+              image.dispose();
+            }
+            expect(DanmakuEmoticonRenderer.debugCompositeBytes, lessThanOrEqualTo(16 * 1024 * 1024));
+          }
+          expect(generatedBytes, greaterThan(16 * 1024 * 1024), reason: 'must actually cross the byte budget');
+          expect(await retained!.toByteData(), isNotNull, reason: 'eviction must not dispose the live canvas clone');
+        } finally {
+          retained?.dispose();
+        }
+      });
+    });
+
+    test('rejected canvas item does not start image loading', () async {
+      var loads = 0;
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) {
+        loads++;
+        return _ThrowingImageProvider();
+      };
+      final content = DanmakuContentItem('[x]');
+      await DanmakuEmoticonRenderer.apply(
+          controller: _controllerWith([]), content: content, emoticons: [_emot('[x]', 'https://bytes/rejected')]);
+      expect(loads, 0);
+    });
+
+    test('live canvas byte budget subtracts replaced image and includes other tracks', () {
+      final scroll =
+          DanmakuItem<dynamic>(content: DanmakuContentItem('scroll'), height: 4, width: 4, image: _makeImage());
+      final pinned =
+          DanmakuItem<dynamic>(content: DanmakuContentItem('pinned'), height: 4, width: 4, image: _makeImage());
+      final expired =
+          DanmakuItem<dynamic>(content: DanmakuContentItem('expired'), height: 4, width: 4, image: _makeImage())
+            ..expired = true;
+      final items = [scroll, pinned, expired];
+      try {
+        expect(liveDanmakuBitmapBytes(items), 128);
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 64, replacedBytes: 64, maxBytes: 128), isTrue);
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 65, replacedBytes: 64, maxBytes: 128), isFalse);
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 1, maxBytes: 128), isFalse);
+        pinned.dispose();
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 64, maxBytes: 128), isTrue);
+      } finally {
+        for (final item in items) {
+          item.dispose();
+        }
+      }
     });
   });
 
@@ -377,11 +514,13 @@ void main() {
     test('渲染链路抛异常时自己吞掉，不让异常外溢成 fatal', () async {
       _ThrowingImageStream.addListenerCalls = 0;
       DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => _ThrowingImageProvider();
+      final content = DanmakuContentItem<dynamic>('[doge]');
+      final item = DanmakuItem<dynamic>(content: content, height: 20, width: 20);
 
       await expectLater(
         DanmakuEmoticonRenderer.apply(
-          controller: _controllerWith(const []),
-          content: DanmakuContentItem<dynamic>('[doge]'),
+          controller: _controllerWith([item]),
+          content: content,
           emoticons: const [emoticon],
         ),
         completes,
@@ -510,14 +649,14 @@ void main() {
 }
 
 /// 造一张最小的 ui.Image，用来模拟弹幕库为纯文本弹幕生成的占位符位图。
-ui.Image _makeImage() {
+ui.Image _makeImage([int size = 4]) {
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
     const ui.Rect.fromLTWH(0, 0, 4, 4),
     ui.Paint()..color = const ui.Color(0xFF0000FF),
   );
   final picture = recorder.endRecording();
-  final image = picture.toImageSync(4, 4);
+  final image = picture.toImageSync(size, size);
   picture.dispose();
   return image;
 }

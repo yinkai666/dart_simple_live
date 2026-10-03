@@ -6,6 +6,20 @@ void check(bool value, String message) {
 }
 
 void main() {
+  final deferred = PlaybackRecovery();
+  check(!deferred.request(background: true), 'Background failure records intent without starting requests');
+  check(deferred.pending, 'Background failure must survive until foreground');
+  deferred.cancel();
+  check(deferred.pending, 'Suspending in-flight work must preserve pending recovery');
+  check(deferred.request(background: false), 'Foreground can resume deferred recovery');
+  deferred.reset();
+  check(!deferred.pending, 'Manual reset/close clears deferred recovery');
+  final waitingIntent = RecoveryPlayIntent(initiallyPlaying: true);
+  waitingIntent.observe(playing: false, completed: false);
+  deferred.request(background: true);
+  deferred.cancel();
+  deferred.request(background: false);
+  check(!waitingIntent.beginOpen(), 'The same intent must survive retry delay and background suspension');
   final pausedDuringFetch = RecoveryPlayIntent(initiallyPlaying: true);
   pausedDuringFetch.observe(playing: false, completed: false);
   check(!pausedDuringFetch.beginOpen(), 'A pause while fetching URLs must open paused');

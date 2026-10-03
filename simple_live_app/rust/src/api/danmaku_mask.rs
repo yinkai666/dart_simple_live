@@ -5,9 +5,9 @@ use xxhash_rust::xxh3::xxh3_64;
 /// DanmakuMask: 滑动窗口 + 分桶 + 频控
 #[flutter_rust_bridge::frb(opaque)]
 pub struct DanmakuMask {
-    base_window_ms: u32,     // 基础窗口（ms）
-    bucket_count: u16,       // 桶数量
-    max_frequency: u16,      // 最大允许频次
+    base_window_ms: u32, // 基础窗口（ms）
+    bucket_count: u16,   // 桶数量
+    max_frequency: u16,  // 最大允许频次
 
     use_normalization: bool,
     use_frequency_control: bool,
@@ -16,8 +16,8 @@ pub struct DanmakuMask {
     window_ms: u32,
     bucket_size_ms: u32,
 
-    current_bucket: usize,  // Vec 索引
-    last_shift_ms: u64,     // 上次滑动的时间戳（ms）
+    current_bucket: usize, // Vec 索引
+    last_shift_ms: u64,    // 上次滑动的时间戳（ms）
 
     // 桶内记录每个 hash 的出现次数（保证频控计数准确）
     buckets: Vec<HashMap<u64, u16>>,
@@ -37,13 +37,12 @@ impl DanmakuMask {
         use_frequency_control: bool,
         max_frequency: u16,
     ) -> Self {
-        let bucket_count_usize = bucket_count.max(1) as usize;
-        let bucket_size_ms = base_window_ms / bucket_count.max(1) as u32;
+        let bucket_count = bucket_count.max(1);
+        let bucket_count_usize = bucket_count as usize;
+        let bucket_size_ms = (base_window_ms / bucket_count as u32).max(1);
 
-        let norm_re_space = use_normalization
-            .then(|| Regex::new(r"\s+").unwrap());
-        let norm_re_punct = use_normalization
-            .then(|| Regex::new(r"[~!！?？,.，。]").unwrap());
+        let norm_re_space = use_normalization.then(|| Regex::new(r"\s+").unwrap());
+        let norm_re_punct = use_normalization.then(|| Regex::new(r"[~!！?？,.，。]").unwrap());
 
         Self {
             base_window_ms,
@@ -51,7 +50,7 @@ impl DanmakuMask {
             max_frequency,
             use_normalization,
             use_frequency_control,
-            window_ms: base_window_ms,
+            window_ms: bucket_size_ms * bucket_count as u32,
             bucket_size_ms,
             current_bucket: 0,
             last_shift_ms: 0,
@@ -85,6 +84,22 @@ impl DanmakuMask {
     fn shift_if_needed(&mut self, now_ms: u64) {
         if self.last_shift_ms == 0 {
             self.last_shift_ms = now_ms;
+            return;
+        }
+
+        let elapsed = now_ms.saturating_sub(self.last_shift_ms);
+        if elapsed >= self.window_ms as u64 {
+            // All entries expired. A long suspension must cost at most one
+            // pass over the buckets, not one iteration per elapsed interval.
+            for bucket in &mut self.buckets {
+                bucket.clear();
+            }
+            self.freq_map.clear();
+            let steps = elapsed / self.bucket_size_ms as u64;
+            self.current_bucket = (self.current_bucket
+                + (steps % self.bucket_count as u64) as usize)
+                % self.bucket_count as usize;
+            self.last_shift_ms += steps * self.bucket_size_ms as u64;
             return;
         }
 
@@ -128,11 +143,7 @@ impl DanmakuMask {
 impl DanmakuMask {
     /// 批量判断是否允许
     /// 返回 Vec<u8>：1 = 允许，0 = 屏蔽
-    pub fn allow_list_batch(
-        &mut self,
-        texts: Vec<String>,
-        now_ms: u64,
-    ) -> Vec<u8> {
+    pub fn allow_list_batch(&mut self, texts: Vec<String>, now_ms: u64) -> Vec<u8> {
         self.shift_if_needed(now_ms);
 
         let mut results = Vec::with_capacity(texts.len());
@@ -161,5 +172,79 @@ impl DanmakuMask {
         }
 
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructor_normalizes_zero_bucket_count() {
+        let mask = DanmakuMask::new(1000, 0, false, false, 1);
+        assert_eq!(mask.bucket_count, 1);
+        assert_eq!(mask.buckets.len(), mask.bucket_count as usize);
+    }
+
+    #[test]
+    fn constructor_guarantees_positive_bucket_duration() {
+        for (window, count) in [(0, 0), (0, 10), (1, 10)] {
+            let mask = DanmakuMask::new(window, count, false, false, 1);
+            assert!(mask.bucket_size_ms >= 1);
+        }
+    }
+
+    #[test]
+    fn normalized_windows_expire_without_zero_division_or_looping() {
+        for (window, count) in [(0, 0), (0, 10), (1, 10)] {
+            let mut mask = DanmakuMask::new(window, count, false, false, 1);
+            assert_eq!(mask.allow_list_batch(vec!["a".into()], 100), vec![1]);
+            assert_eq!(mask.allow_list_batch(vec!["a".into()], 100), vec![0]);
+            let after_window = 100 + mask.window_ms as u64;
+            assert_eq!(
+                mask.allow_list_batch(vec!["a".into()], after_window),
+                vec![1]
+            );
+        }
+    }
+
+    #[test]
+    fn partial_expiry_retains_unexpired_frequency_counts() {
+        let mut mask = DanmakuMask::new(30, 3, false, true, 3);
+        assert_eq!(
+            mask.allow_list_batch(vec!["a".into(), "a".into()], 100),
+            vec![1, 1]
+        );
+        assert_eq!(mask.allow_list_batch(vec!["a".into()], 110), vec![1]);
+        assert_eq!(mask.allow_list_batch(vec!["a".into()], 120), vec![0]);
+        assert_eq!(
+            mask.allow_list_batch(vec!["a".into(), "a".into(), "a".into()], 130),
+            vec![1, 1, 0]
+        );
+    }
+
+    #[test]
+    fn long_suspension_clears_once_and_preserves_bucket_alignment() {
+        let mut mask = DanmakuMask::new(30, 3, false, false, 1);
+        mask.allow_list_batch(vec!["a".into()], 100);
+        mask.allow_list_batch(vec!["b".into()], 110);
+        let now = u64::MAX - 7;
+        let steps = (now - 110) / 10;
+        assert_eq!(mask.allow_list_batch(vec!["a".into()], now), vec![1]);
+        assert_eq!(mask.last_shift_ms, 110 + steps * 10);
+        assert_eq!(mask.current_bucket, (1 + (steps % 3) as usize) % 3);
+        assert_eq!(mask.freq_map.len(), 1);
+        assert_eq!(mask.buckets.iter().map(|b| b.len()).sum::<usize>(), 1);
+    }
+
+    #[test]
+    fn whole_window_expiry_keeps_fractional_interval_remainder() {
+        let mut mask = DanmakuMask::new(30, 3, false, false, 1);
+        mask.allow_list_batch(vec!["a".into()], 100);
+        assert_eq!(mask.allow_list_batch(vec!["a".into()], 145), vec![1]);
+        assert_eq!(mask.last_shift_ms, 140);
+        assert_eq!(mask.current_bucket, 1);
+        assert_eq!(mask.allow_list_batch(vec!["a".into()], 169), vec![0]);
+        assert_eq!(mask.allow_list_batch(vec!["a".into()], 170), vec![1]);
     }
 }

@@ -5,7 +5,7 @@ int recoveryLineIndex(int selectedLine, int lineCount, int attempt) {
   return attempt <= 1 ? base : (base + 1) % lineCount;
 }
 
-/// Capture user play/pause transitions while fetching/queueing a recovery.
+/// Capture user play/pause transitions from scheduling through native opening.
 /// Initial stopped state may be EOF/error and must not suppress recovery.
 class RecoveryPlayIntent {
   RecoveryPlayIntent({required bool initiallyPlaying}) : _wasPlaying = initiallyPlaying;
@@ -39,6 +39,7 @@ class PlaybackRecovery {
   int _generation = 0;
   int attempts = 0;
   bool busy = false;
+  bool pending = false;
   DateTime? _retryAt;
   DateTime? _progressSince;
   DateTime? _lastProgressAt;
@@ -48,6 +49,11 @@ class PlaybackRecovery {
 
   bool get exhausted => attempts >= maxAttempts;
   bool isCurrent(int token) => token == _generation;
+
+  bool request({required bool background}) {
+    pending = true;
+    return !background;
+  }
 
   bool observeBuffering(DateTime now, {required bool eligible}) {
     if (!eligible) {
@@ -105,6 +111,7 @@ class PlaybackRecovery {
     if (elapsed < stablePeriod || advanced.inMilliseconds < elapsed.inMilliseconds * 0.8) return false;
     attempts = 0;
     _retryAt = null;
+    pending = false;
     return true;
   }
 
@@ -112,6 +119,7 @@ class PlaybackRecovery {
     cancel();
     attempts = 0;
     _retryAt = null;
+    pending = false;
   }
 
   /// Suspend pending work without giving an interrupted attempt a new budget.

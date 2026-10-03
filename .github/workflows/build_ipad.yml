@@ -46,8 +46,12 @@ jobs:
           dart test/playback_recovery_check.dart
           dart test/bounded_chat_buffer_check.dart
           flutter test --no-pub test/danmaku_emoticon_test.dart
+          flutter test --no-pub test/danmaku_admission_test.dart
           flutter test --no-pub test/multiview/material_scope_test.dart test/multiview/gesture_surface_test.dart
           flutter analyze --no-pub lib/modules/multiview
+
+      - name: Check native danmaku window boundaries
+        run: cargo test --manifest-path rust/Cargo.toml
 
       - name: Build iPad app
         run: flutter build ios --release --no-codesign

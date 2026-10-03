@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:flutter/material.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
+import 'package:simple_live_app/modules/live_room/danmaku/danmaku_admission.dart';
+import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
 
 import 'multi_view_danmaku.dart';
 
@@ -16,6 +18,7 @@ class MultiViewDanmakuOverlay extends StatefulWidget {
 
 class _MultiViewDanmakuOverlayState extends State<MultiViewDanmakuOverlay> {
   DanmakuController? _controller;
+  final _admission = DanmakuAdmission();
   final List<StreamSubscription<dynamic>> _subscriptions = [];
 
   @override
@@ -28,9 +31,19 @@ class _MultiViewDanmakuOverlayState extends State<MultiViewDanmakuOverlay> {
     _subscriptions.add(widget.danmaku.batches.listen((messages) {
       if (!mounted || !widget.danmaku.enabled.value) return;
       if (_controller?.running == false) _controller?.resume();
+      final controller = _controller;
+      if (controller == null) return;
+      final dpr = MediaQuery.devicePixelRatioOf(context);
       for (final message in messages) {
-        _controller?.addDanmaku(DanmakuContentItem(message.message,
-            color: Color.fromARGB(255, message.color.r, message.color.g, message.color.b)));
+        if (!_admission.allow()) break;
+        final item = DanmakuContentItem(message.message,
+            color: Color.fromARGB(255, message.color.r, message.color.g, message.color.b));
+        final bytes = estimateDanmakuBytes(item, controller.option, dpr);
+        if (bytes == null) continue;
+        if (!fitsLiveDanmakuBitmapBudget([...controller.scrollDanmaku, ...controller.staticDanmaku], addedBytes: bytes)) {
+          break;
+        }
+        controller.addDanmaku(item);
       }
     }));
     _subscriptions.add(widget.danmaku.clears.listen((_) {
