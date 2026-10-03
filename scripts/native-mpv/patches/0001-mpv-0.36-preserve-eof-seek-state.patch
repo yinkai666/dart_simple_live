@@ -1,0 +1,42 @@
+Subject: [PATCH] Backport mpv EOF seek-state fix to v0.36.0
+
+Upstream: d59f4fd3ec141693da4f7f6677aa729e1bb92f4d
+https://github.com/mpv-player/mpv/commit/d59f4fd3ec141693da4f7f6677aa729e1bb92f4d
+https://github.com/mpv-player/mpv/pull/14135
+
+Do not clear AT_END_OF_FILE merely because a seek was queued. A zero
+relative seek during VO reinitialization can otherwise make the existing
+play_current_file() stop_play assertion fail. mp_seek already performs
+the transition when executing a seek. Keep the assertion enabled.
+
+Adapted to pristine v0.36.0: it predates the temporary play-direction
+workaround removed by the upstream commit, so add only the final required
+play_dir assignment instead of removing that absent workaround.
+
+---
+diff --git a/player/command.c b/player/command.c
+--- a/player/command.c
++++ b/player/command.c
+@@ -6935,6 +6935,9 @@
+ 
+     if (opt_ptr == &opts->play_dir) {
+         if (mpctx->play_dir != opts->play_dir) {
++            // The option must be set before we seek if we're at EOF.
++            if (mpctx->stop_play == AT_END_OF_FILE)
++                mpctx->play_dir = opts->play_dir;
+             queue_seek(mpctx, MPSEEK_ABSOLUTE, get_current_time(mpctx),
+                        MPSEEK_EXACT, 0);
+         }
+diff --git a/player/playloop.c b/player/playloop.c
+--- a/player/playloop.c
++++ b/player/playloop.c
+@@ -426,9 +426,6 @@
+     struct seek_params *seek = &mpctx->seek;
+ 
+     mp_wakeup_core(mpctx);
+-
+-    if (mpctx->stop_play == AT_END_OF_FILE)
+-        mpctx->stop_play = KEEP_PLAYING;
+ 
+     switch (type) {
+     case MPSEEK_RELATIVE:

@@ -17,7 +17,7 @@ jobs:
   build-ipad:
     if: github.ref == 'refs/heads/codex/ipad-multiview'
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: simple_live_app
@@ -53,8 +53,26 @@ jobs:
       - name: Check native danmaku window boundaries
         run: cargo test --manifest-path rust/Cargo.toml
 
+      - name: Prepare native mpv build tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mpv-tools"
+          "$RUNNER_TEMP/mpv-tools/bin/python" -m pip install 'meson==1.8.5' 'ninja==1.13.0'
+          echo "$RUNNER_TEMP/mpv-tools/bin" >> "$GITHUB_PATH"
+          command -v pkg-config >/dev/null || brew install pkgconf
+
+      - name: Rebuild iPad mpv with upstream EOF assertion fix
+        run: python3 ../scripts/native-mpv/build_patched_mpv.py --app-dir .
+
       - name: Build iPad app
         run: flutter build ios --release --no-codesign
+
+      - name: Verify embedded patched mpv and symbols
+        run: |
+          python3 ../scripts/native-mpv/verify_patched_mpv.py \
+            --app-dir . --manifest build/native-mpv/manifest.json \
+            --dsym build/native-mpv/Mpv.framework.dSYM \
+            --patch ../scripts/native-mpv/patches/0001-mpv-0.36-preserve-eof-seek-state.patch \
+            --report build/native-mpv/embedded-verification.json
 
       - name: Verify iPad identity and package unsigned IPA
         run: |
@@ -81,3 +99,12 @@ jobs:
           path: simple_live_app/build/ipad/Slive-iPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload native mpv symbols and build provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Slive-iPad-native-mpv-symbols
+          path: simple_live_app/build/native-mpv/
+          if-no-files-found: warn
+          retention-days: 30
