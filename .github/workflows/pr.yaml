@@ -36,16 +36,6 @@ jobs:
           cd simple_live_app
           flutter pub get
 
-      - name: Install appdmg
-        run: npm install -g appdmg
-
-      - name: Install fast-forge
-        run: |
-          git clone https://github.com/SlotSun/fastforge.git
-          cd fastforge
-          dart pub global activate melos
-          melos run activate
-
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -56,10 +46,68 @@ jobs:
           cd simple_live_app
           flutter build apk --debug
 
+      - name: Check playback stability regressions
+        run: |
+          cd simple_live_app
+          dart test/bounded_chat_buffer_check.dart
+          dart test/playback_recovery_check.dart
+          dart test/room_task_scope_regression.dart
+          flutter test --no-pub test/live_room_follow_sort_test.dart test/danmaku_admission_test.dart test/danmaku_emoticon_test.dart
+          cargo test --manifest-path rust/Cargo.toml
+
+      - name: Prepare native mpv build tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mpv-tools"
+          "$RUNNER_TEMP/mpv-tools/bin/python" -m pip install 'meson==1.8.5' 'ninja==1.13.0'
+          echo "$RUNNER_TEMP/mpv-tools/bin" >> "$GITHUB_PATH"
+          command -v pkg-config >/dev/null || brew install pkgconf
+
+      - name: Rebuild iOS mpv with upstream EOF assertion fix
+        run: |
+          python3 -m unittest discover -s scripts/native-mpv -p 'test_*.py'
+          python3 scripts/native-mpv/build_patched_mpv.py --app-dir simple_live_app
+
       - name: Build IPA
         run: |
           cd simple_live_app
-          flutter build ios --no-codesign
+          flutter build ios --release --no-codesign --no-pub
+
+      - name: Install and verify patched mpv
+        run: |
+          python3 scripts/native-mpv/verify_patched_mpv.py \
+            --app-dir simple_live_app \
+            --manifest simple_live_app/build/native-mpv/manifest.json \
+            --install-from simple_live_app/build/native-mpv/Mpv \
+            --dsym simple_live_app/build/native-mpv/Mpv.framework.dSYM \
+            --patch scripts/native-mpv/patches/0001-mpv-0.36-preserve-eof-seek-state.patch \
+            --report simple_live_app/build/native-mpv/embedded-verification.json
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+          with Path('simple_live_app/build/ios/iphoneos/Runner.app/Info.plist').open('rb') as source:
+              info = plistlib.load(source)
+          assert info['CFBundleIdentifier'] == 'com.yinkai666.slive', info['CFBundleIdentifier']
+          assert sorted(info['UIDeviceFamily']) == [1, 2], info['UIDeviceFamily']
+          PY
+
+      - name: Upload native mpv symbols and build provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-ios-native-mpv-symbols
+          path: simple_live_app/build/native-mpv/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Install appdmg
+        run: npm install -g appdmg
+
+      - name: Install fast-forge
+        run: |
+          git clone https://github.com/SlotSun/fastforge.git
+          cd fastforge
+          dart pub global activate melos
+          melos run activate
 
       - name: Build MacOS
         run: |

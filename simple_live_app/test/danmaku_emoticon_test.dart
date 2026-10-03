@@ -17,8 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
-LiveMessageEmoticon _emot(String? name, String url) =>
-    LiveMessageEmoticon(name: name, url: url, width: 20, height: 20);
+LiveMessageEmoticon _emot(String? name, String url) => LiveMessageEmoticon(name: name, url: url, width: 20, height: 20);
 
 /// 把片段列表压成便于断言的形式
 List<String> _shape(List<DanmakuSegment> segments) {
@@ -34,6 +33,221 @@ List<String> _shape(List<DanmakuSegment> segments) {
 void main() {
   // 句柄生命周期那组要走 ImageProvider / ui.Image，需要绑定与视图。
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('pending image lifecycle', () {
+    late _ControlledImageStream stream;
+    setUp(() {
+      DanmakuEmoticonRenderer.clearCache();
+      stream = _ControlledImageStream();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => _ControlledImageProvider(stream);
+    });
+    tearDown(() {
+      DanmakuEmoticonRenderer.clearCache();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = null;
+    });
+    Future<DanmakuEmoticonBitmap?> renderPending(String url) => DanmakuEmoticonRenderer.render(
+        text: '[x]', emoticons: [_emot('[x]', url)], option: const DanmakuOption(), color: const Color(0xFFFFFFFF));
+
+    test('clear detaches stalled listeners and completes renders', () async {
+      final pending = renderPending('https://test/stalled');
+      expect(stream.listeners, hasLength(1));
+      DanmakuEmoticonRenderer.clearCache();
+      expect(stream.listeners, isEmpty);
+      expect(await pending.timeout(const Duration(seconds: 1)), isNull);
+    });
+    test('same URL shares one in-flight listener', () async {
+      final first = renderPending('https://test/same');
+      final second = renderPending('https://test/same');
+      expect(stream.listeners, hasLength(1));
+      DanmakuEmoticonRenderer.clearCache();
+      expect(await first, isNull);
+      expect(await second, isNull);
+    });
+    testWidgets('stalled images time out and release listeners', (tester) async {
+      final pending = renderPending('https://test/timeout');
+      await tester.pump(const Duration(seconds: 11));
+      expect(stream.listeners, isEmpty);
+      expect(await pending, isNull);
+    });
+    test('limits pending unique image loads', () async {
+      final pending = List.generate(100, (i) => renderPending('https://test/$i'));
+      expect(stream.listeners.length, lessThanOrEqualTo(32));
+      DanmakuEmoticonRenderer.clearCache();
+      expect(await Future.wait(pending), everyElement(isNull));
+    });
+    test('bounds waiters even when every message uses the same URL', () async {
+      var completed = 0;
+      final pending = List.generate(
+          300,
+          (_) => renderPending('https://test/shared').then((value) {
+                completed++;
+                return value;
+              }));
+      await Future<void>.delayed(Duration.zero);
+      expect(stream.listeners, hasLength(1));
+      expect(completed, greaterThanOrEqualTo(44));
+      DanmakuEmoticonRenderer.clearCache();
+      expect(await Future.wait(pending), everyElement(isNull));
+    });
+    test('late callback after clear disposes the image', () async {
+      final pending = renderPending('https://test/late');
+      final listener = stream.listeners.single;
+      DanmakuEmoticonRenderer.clearCache();
+      final image = _makeImage();
+      listener.onImage(ImageInfo(image: image), false);
+      expect(image.debugDisposed, isTrue);
+      expect(await pending, isNull);
+      expect(DanmakuEmoticonRenderer.debugCachedSourceImages, isEmpty);
+    });
+    test('shared completion gives independent image handles', () async {
+      final first = renderPending('https://test/success');
+      final second = renderPending('https://test/success');
+      stream.listeners.first.onImage(ImageInfo(image: _makeImage()), false);
+      final a = (await first)!;
+      final b = (await second)!;
+      a.image.dispose();
+      expect(b.image.debugDisposed, isFalse);
+      expect(b.image.width, greaterThan(0));
+      b.image.dispose();
+    });
+  });
+
+  group('bounded bitmap memory', () {
+    setUp(() => DanmakuEmoticonRenderer.clearCache());
+    tearDown(() {
+      DanmakuEmoticonRenderer.clearCache();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = null;
+    });
+
+    test('source cache evicts by decoded bytes while returned bitmap remains usable', () async {
+      for (var i = 0; i < 20; i++) {
+        final stream = _ControlledImageStream();
+        DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => _ControlledImageProvider(stream);
+        final pending = DanmakuEmoticonRenderer.render(
+            text: '[x]',
+            emoticons: [_emot('[x]', 'https://bytes/$i')],
+            option: const DanmakuOption(),
+            color: const Color(0xFFFFFFFF));
+        stream.listeners.single.onImage(ImageInfo(image: _makeImage(512)), false);
+        final bitmap = await pending;
+        expect(bitmap, isNotNull);
+        bitmap!.image.dispose();
+        expect(DanmakuEmoticonRenderer.debugSourceBytes, lessThanOrEqualTo(16 * 1024 * 1024));
+      }
+      expect(DanmakuEmoticonRenderer.debugCachedSourceImages.length, lessThan(20));
+      DanmakuEmoticonRenderer.clearCache();
+      expect(DanmakuEmoticonRenderer.debugSourceBytes, 0);
+      expect(DanmakuEmoticonRenderer.debugCompositeBytes, 0);
+    });
+
+    test('cached image hits still have a bounded number of concurrent renders', () async {
+      final png = await _makePng();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
+      Future<DanmakuEmoticonBitmap?> render() => DanmakuEmoticonRenderer.render(
+          text: '[x]',
+          emoticons: [_emot('[x]', 'https://bytes/hot')],
+          option: const DanmakuOption(),
+          color: const Color(0xFFFFFFFF));
+      (await render())!.image.dispose();
+      final pending = List.generate(300, (_) => render());
+      expect(DanmakuEmoticonRenderer.debugActiveRenders, lessThanOrEqualTo(32));
+      final bitmaps = await Future.wait(pending);
+      expect(bitmaps.whereType<DanmakuEmoticonBitmap>().length, lessThanOrEqualTo(32));
+      for (final bitmap in bitmaps) {
+        bitmap?.image.dispose();
+      }
+      expect(DanmakuEmoticonRenderer.debugActiveRenders, 0);
+    });
+
+    test('oversize composite returns text fallback before native image allocation', () async {
+      final png = await _makePng();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
+      final bitmap = await DanmakuEmoticonRenderer.render(
+          text: '${'W' * 5000}[x]',
+          emoticons: [_emot('[x]', 'https://bytes/wide')],
+          option: const DanmakuOption(),
+          color: const Color(0xFFFFFFFF));
+      expect(bitmap, isNull);
+      expect(DanmakuEmoticonRenderer.debugCompositeBytes, 0);
+      // Below the input-length ceiling: measured physical pixels must also
+      // reject a wide message, before toImageSync reaches the native allocator.
+      final wide = await DanmakuEmoticonRenderer.render(
+          text: '${'W' * 150}[x]',
+          emoticons: [_emot('[x]', 'https://bytes/wide')],
+          option: const DanmakuOption(fontSize: 100),
+          color: const Color(0xFFFFFFFF));
+      expect(wide, isNull);
+      expect(DanmakuEmoticonRenderer.debugCompositeBytes, 0);
+    });
+
+    testWidgets('composite byte eviction preserves the canvas-owned clone', (tester) async {
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.runAsync(() async {
+        final png = await _makePng();
+        DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
+        ui.Image? retained;
+        var generatedBytes = 0;
+        try {
+          for (var i = 0; i < 24; i++) {
+            final bitmap = await DanmakuEmoticonRenderer.render(
+                text: '${'W' * 8}[x]',
+                emoticons: [_emot('[x]', 'https://bytes/composite')],
+                option: const DanmakuOption(fontSize: 50),
+                color: Color(0xFF000000 + i));
+            expect(bitmap, isNotNull);
+            final image = bitmap!.image;
+            generatedBytes += image.width * image.height * 4;
+            if (i == 0) {
+              retained = image;
+            } else {
+              image.dispose();
+            }
+            expect(DanmakuEmoticonRenderer.debugCompositeBytes, lessThanOrEqualTo(16 * 1024 * 1024));
+          }
+          expect(generatedBytes, greaterThan(16 * 1024 * 1024), reason: 'must actually cross the byte budget');
+          expect(await retained!.toByteData(), isNotNull, reason: 'eviction must not dispose the live canvas clone');
+        } finally {
+          retained?.dispose();
+        }
+      });
+    });
+
+    test('rejected canvas item does not start image loading', () async {
+      var loads = 0;
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) {
+        loads++;
+        return _ThrowingImageProvider();
+      };
+      final content = DanmakuContentItem('[x]');
+      await DanmakuEmoticonRenderer.apply(
+          controller: _controllerWith([]), content: content, emoticons: [_emot('[x]', 'https://bytes/rejected')]);
+      expect(loads, 0);
+    });
+
+    test('live canvas byte budget subtracts replaced image and includes other tracks', () {
+      final scroll =
+          DanmakuItem<dynamic>(content: DanmakuContentItem('scroll'), height: 4, width: 4, image: _makeImage());
+      final pinned =
+          DanmakuItem<dynamic>(content: DanmakuContentItem('pinned'), height: 4, width: 4, image: _makeImage());
+      final expired =
+          DanmakuItem<dynamic>(content: DanmakuContentItem('expired'), height: 4, width: 4, image: _makeImage())
+            ..expired = true;
+      final items = [scroll, pinned, expired];
+      try {
+        expect(liveDanmakuBitmapBytes(items), 128);
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 64, replacedBytes: 64, maxBytes: 128), isTrue);
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 65, replacedBytes: 64, maxBytes: 128), isFalse);
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 1, maxBytes: 128), isFalse);
+        pinned.dispose();
+        expect(fitsLiveDanmakuBitmapBudget(items, addedBytes: 64, maxBytes: 128), isTrue);
+      } finally {
+        for (final item in items) {
+          item.dispose();
+        }
+      }
+    });
+  });
 
   group('splitDanmakuSegments', () {
     test('表情在中间时切成 文本-表情-文本', () {
@@ -123,8 +337,7 @@ void main() {
   group('DanmakuEmoticonRenderer.canRender', () {
     test('只认非空的表情列表', () {
       expect(DanmakuEmoticonRenderer.canRender(null), isFalse);
-      expect(
-          DanmakuEmoticonRenderer.canRender(<LiveMessageEmoticon>[]), isFalse);
+      expect(DanmakuEmoticonRenderer.canRender(<LiveMessageEmoticon>[]), isFalse);
       expect(DanmakuEmoticonRenderer.canRender('普通载荷'), isFalse);
       expect(
         DanmakuEmoticonRenderer.canRender([_emot('[doge]', 'https://x/y.png')]),
@@ -172,8 +385,7 @@ void main() {
     }
 
     test('缓存命中时返回独立句柄：连续渲染两次都不会画到已释放的图', () async {
-      DanmakuEmoticonRenderer.debugImageProviderFactory =
-          (_) => MemoryImage(png);
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
 
       final first = await render();
       final second = await render();
@@ -189,8 +401,7 @@ void main() {
     });
 
     test('clearCache 会把缓存的源图句柄一并释放（否则是永久泄漏）', () async {
-      DanmakuEmoticonRenderer.debugImageProviderFactory =
-          (_) => MemoryImage(png);
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
 
       final bitmap = await render();
       expect(bitmap, isNotNull);
@@ -213,8 +424,7 @@ void main() {
     });
 
     test('clearCache 只释放缓存本体，不影响已分发出去的合成位图', () async {
-      DanmakuEmoticonRenderer.debugImageProviderFactory =
-          (_) => MemoryImage(png);
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
 
       final first = await render();
       expect(first, isNotNull);
@@ -255,8 +465,7 @@ void main() {
     });
 
     setUp(() {
-      DanmakuEmoticonRenderer.debugImageProviderFactory =
-          (_) => MemoryImage(png);
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => MemoryImage(png);
     });
 
     tearDown(() {
@@ -304,13 +513,14 @@ void main() {
 
     test('渲染链路抛异常时自己吞掉，不让异常外溢成 fatal', () async {
       _ThrowingImageStream.addListenerCalls = 0;
-      DanmakuEmoticonRenderer.debugImageProviderFactory =
-          (_) => _ThrowingImageProvider();
+      DanmakuEmoticonRenderer.debugImageProviderFactory = (_) => _ThrowingImageProvider();
+      final content = DanmakuContentItem<dynamic>('[doge]');
+      final item = DanmakuItem<dynamic>(content: content, height: 20, width: 20);
 
       await expectLater(
         DanmakuEmoticonRenderer.apply(
-          controller: _controllerWith(const []),
-          content: DanmakuContentItem<dynamic>('[doge]'),
+          controller: _controllerWith([item]),
+          content: content,
           emoticons: const [emoticon],
         ),
         completes,
@@ -400,8 +610,7 @@ void main() {
       expect(
         bitmap.width,
         closeTo(
-          (bitmap.height - option.strokeWidth) * kMaxEmoteAspectRatio +
-              option.strokeWidth,
+          (bitmap.height - option.strokeWidth) * kMaxEmoteAspectRatio + option.strokeWidth,
           0.01,
         ),
       );
@@ -440,14 +649,14 @@ void main() {
 }
 
 /// 造一张最小的 ui.Image，用来模拟弹幕库为纯文本弹幕生成的占位符位图。
-ui.Image _makeImage() {
+ui.Image _makeImage([int size = 4]) {
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
     const ui.Rect.fromLTWH(0, 0, 4, 4),
     ui.Paint()..color = const ui.Color(0xFF0000FF),
   );
   final picture = recorder.endRecording();
-  final image = picture.toImageSync(4, 4);
+  final image = picture.toImageSync(size, size);
   picture.dispose();
   return image;
 }
@@ -484,8 +693,7 @@ class _ThrowingImageProvider extends ImageProvider<Object> {
   Future<Object> obtainKey(ImageConfiguration configuration) async => this;
 
   @override
-  ImageStream createStream(ImageConfiguration configuration) =>
-      _ThrowingImageStream();
+  ImageStream createStream(ImageConfiguration configuration) => _ThrowingImageStream();
 }
 
 class _ThrowingImageStream extends ImageStream {
@@ -513,4 +721,24 @@ Future<Uint8List> _makePng() async {
   picture.dispose();
   image.dispose();
   return data!.buffer.asUint8List();
+}
+
+class _ControlledImageProvider extends ImageProvider<Object> {
+  final _ControlledImageStream stream;
+  _ControlledImageProvider(this.stream);
+  @override
+  Future<Object> obtainKey(ImageConfiguration configuration) async => this;
+  @override
+  ImageStream createStream(ImageConfiguration configuration) => stream;
+  @override
+  void resolveStreamForKey(
+      ImageConfiguration configuration, ImageStream stream, Object key, ImageErrorListener handleError) {}
+}
+
+class _ControlledImageStream extends ImageStream {
+  final List<ImageStreamListener> listeners = [];
+  @override
+  void addListener(ImageStreamListener listener) => listeners.add(listener);
+  @override
+  void removeListener(ImageStreamListener listener) => listeners.remove(listener);
 }

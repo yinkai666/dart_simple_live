@@ -21,8 +21,10 @@ import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_block.dart';
 import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
+import 'package:simple_live_app/modules/live_room/bounded_chat_buffer.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
 import 'package:simple_live_app/modules/live_room/player/room_task_scope.dart';
+import 'package:simple_live_app/modules/live_room/player/playback_recovery.dart';
 import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/follow_block_service.dart';
@@ -39,6 +41,16 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   final _roomTasks = RoomTaskScope();
   final _playTasks = RoomTaskScope();
+  final _recovery = PlaybackRecovery();
+  Timer? _recoveryTimer;
+  Timer? _recoveryVerificationTimer;
+  Timer? _playbackMonitor;
+  StreamSubscription<bool>? _recoveryPlaySubscription;
+  RecoveryPlayIntent? _pendingRecoveryPlayIntent;
+  bool _recoveryOpenedPaused = false;
+  bool _recovering = false;
+  bool _recoveryFailed = false;
+  bool _failureDuringRecovery = false;
   bool _roomClosed = false;
   bool _playlistReady = false;
   Timer? _autoExitGraceTimer;
@@ -51,6 +63,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   List<LiveMessage> danmakuBuffer = [];
   Timer? danmakuTimer;
   bool _isProcessingBuffer = false;
+  Future<Object?>? _maskInFlight;
+  final _chatBuffer = BoundedChatBuffer<LiveMessage>(capacity: 150);
 
   LiveRoomController({
     required this.pSite,
@@ -128,8 +142,6 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   int _count = 0;
 
-  final int _kMaxChatMessageCount = 150;
-
   @override
   void onInit() {
     WidgetsBinding.instance.addObserver(this);
@@ -151,6 +163,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     });
     _initDanmakuMask();
     super.onInit();
+    _playbackMonitor = Timer.periodic(const Duration(seconds: 1), (_) => _monitorPlayback());
   }
 
   void _initDanmakuMask() async {
@@ -188,7 +201,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       final batchMessages = batch.map((e) => e.message).toList();
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final allowedResults = await rustDanmakuMask.allowListBatch(texts: batchMessages, nowMs: BigInt.from(nowMs));
+      final pending = rustDanmakuMask.allowListBatch(texts: batchMessages, nowMs: BigInt.from(nowMs));
+      _maskInFlight = pending;
+      final allowedResults = await pending;
 
       if (!_roomTasks.isCurrent(generation)) return;
       final filteredBatch = <LiveMessage>[];
@@ -200,10 +215,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       if (filteredBatch.isEmpty) return;
 
-      messages.addAll(filteredBatch);
-      if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
-        messages.removeRange(0, messages.length - _kMaxChatMessageCount);
-      }
+      _appendChat(filteredBatch);
 
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => chatScrollToBottom(),
@@ -228,6 +240,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     } catch (e) {
       if (_roomTasks.isCurrent(generation)) Log.logPrint(e);
     } finally {
+      _maskInFlight = null;
       _isProcessingBuffer = false;
     }
   }
@@ -236,6 +249,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     if (scrollController.position.userScrollDirection == ScrollDirection.forward) {
       disableAutoScroll.value = true;
     }
+  }
+
+  void _appendChat(Iterable<LiveMessage> incoming) {
+    _chatBuffer.append(messages, incoming, readingHistory: disableAutoScroll.value);
+  }
+
+  void resumeChat() {
+    if (_roomClosed) return;
+    disableAutoScroll.value = false;
+    _chatBuffer.resume(messages);
+    WidgetsBinding.instance.addPostFrameCallback((_) => chatScrollToBottom());
   }
 
   /// 初始化自动关闭倒计时
@@ -318,6 +342,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void onWSMessage(LiveMessage msg) async {
     if (_roomClosed || followUserBlock.value == null) return;
     if (msg.type == LiveMessageType.chat) {
+      // Reject abnormal payloads before regex work, history retention and FFI.
+      if (msg.message.length > 2048) return;
       // 关键词屏蔽检查
       for (var keyword in AppSettingsController.instance.shieldList) {
         Pattern? pattern;
@@ -365,12 +391,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       //  messages.length>n 预加载部分弹幕后启用去重功能
       if (AppSettingsController.instance.danmakuMaskEnable.value && messages.length > 50) {
-        danmakuBuffer.add(msg);
+        appendRecent(danmakuBuffer, [msg], 300);
       } else {
-        if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
-          messages.removeAt(0);
-        }
-        messages.add(msg);
+        _appendChat([msg]);
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => chatScrollToBottom(),
         );
@@ -455,14 +478,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   /// 添加一条系统消息
   void addSysMsg(String msg) {
-    messages.add(
+    _appendChat([
       LiveMessage(
         type: LiveMessageType.chat,
         userName: "LiveSysMessage",
         message: msg,
         color: LiveMessageColor.white,
       ),
-    );
+    ]);
   }
 
   /// 接收到WebSocket关闭信息
@@ -478,6 +501,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 加载直播间信息
   void loadData() async {
     if (_roomClosed) return;
+    _resetPlaybackRecovery();
     final generation = _roomTasks.invalidate();
     _playTasks.invalidate();
     _playlistReady = false;
@@ -611,6 +635,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Future<void> getPlayUrl() async {
     if (_roomClosed || detail.value == null || currentQuality < 0 || currentQuality >= qualities.length) return;
+    // All manual quality controls enter here; automatic recovery fetches its
+    // own URLs so it cannot accidentally replenish the attempt budget.
+    _resetPlaybackRecovery();
     final roomGeneration = _roomTasks.current;
     final generation = _playTasks.invalidate();
     _playlistReady = false;
@@ -628,8 +655,6 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       playHeaders = playUrl.headers;
       currentLineIndex = 0;
       currentLineInfo.value = "线路${currentLineIndex + 1}";
-      //重置错误次数
-      mediaErrorRetryCount = 0;
       await initPlaylist(generation, roomGeneration);
     } catch (e) {
       if (_isCurrentPlayRequest(generation, roomGeneration)) {
@@ -642,15 +667,15 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void changePlayLine(int index) {
     if (_roomClosed || !_playlistReady || index < 0 || index >= playUrls.length) return;
     currentLineIndex = index;
-    //重置错误次数
-    mediaErrorRetryCount = 0;
+    _resetPlaybackRecovery();
+    _playTasks.invalidate();
     setPlayer();
   }
 
   bool _isCurrentPlayRequest(int generation, int roomGeneration) =>
       _playTasks.isCurrent(generation) && _roomTasks.isCurrent(roomGeneration);
 
-  Future<void> initPlaylist(int generation, int roomGeneration) async {
+  Future<void> initPlaylist(int generation, int roomGeneration, {bool Function()? shouldPlay}) async {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
 
@@ -668,7 +693,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       await initializePlayer();
       if (!_isCurrentPlayRequest(generation, roomGeneration)) return;
       _playlistReady = true;
-      await player.open(Playlist(mediaList));
+      await player.open(Playlist(mediaList, index: currentLineIndex), play: shouldPlay?.call() ?? true);
     });
   }
 
@@ -689,61 +714,177 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   @override
-  void mediaEnd() async {
-    if (_roomClosed || !_playlistReady) return;
-    final generation = _playTasks.current;
-    super.mediaEnd();
-    if (mediaErrorRetryCount < 2) {
-      Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
-        //延迟一秒再刷新
-        await Future.delayed(const Duration(seconds: 1));
+  void mediaEnd() {
+    if (_recovery.busy) _failureDuringRecovery = true;
+    _schedulePlaybackRecovery('播放中断');
+  }
+
+  @override
+  void mediaError(String error) {
+    if (_recovery.busy) _failureDuringRecovery = true;
+    Log.d('播放错误，准备重新获取播放地址：$error');
+    _schedulePlaybackRecovery('播放连接异常');
+  }
+
+  void _clearRecoveryPlayIntent() {
+    _recoveryPlaySubscription?.cancel();
+    _recoveryPlaySubscription = null;
+    _pendingRecoveryPlayIntent = null;
+  }
+
+  RecoveryPlayIntent _ensureRecoveryPlayIntent() {
+    final existing = _pendingRecoveryPlayIntent;
+    if (existing != null) return existing;
+    final intent = RecoveryPlayIntent(initiallyPlaying: player.state.playing);
+    _pendingRecoveryPlayIntent = intent;
+    final roomGeneration = _roomTasks.current;
+    _recoveryPlaySubscription = player.stream.playing.listen((playing) {
+      if (_roomTasks.isCurrent(roomGeneration) && identical(_pendingRecoveryPlayIntent, intent)) {
+        intent.observe(playing: playing, completed: player.state.completed);
       }
-      if (!_playTasks.isCurrent(generation) || !_playlistReady) return;
-      mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
-      return;
+    });
+    return intent;
+  }
+
+  void _resetPlaybackRecovery() {
+    _clearRecoveryPlayIntent();
+    _recoveryOpenedPaused = false;
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
+    _recoveryVerificationTimer?.cancel();
+    _recoveryVerificationTimer = null;
+    _recovery.reset();
+    _recovering = false;
+    _recoveryFailed = false;
+    _failureDuringRecovery = false;
+  }
+
+  void _monitorPlayback() {
+    if (_roomClosed || !_playlistReady) return;
+    final state = player.state;
+    if (state.playing) _recoveryOpenedPaused = false;
+    final now = DateTime.now();
+    final eligible = !isBackground && state.playing && !state.buffering && !_recovery.busy;
+    if (_recovery.observeProgress(state.position, now, eligible: eligible) && _recovering) {
+      _recovering = false;
+      _clearRecoveryPlayIntent();
+      _recoveryFailed = false;
+      _recoveryTimer?.cancel();
+      _recoveryTimer = null;
+      _recoveryVerificationTimer?.cancel();
+      _recoveryVerificationTimer = null;
+      errorMsg.value = '';
+      addSysMsg('播放已恢复');
     }
-
-    Log.d("播放结束");
-    // 遍历线路，如果全部链接都断开就是直播结束了
-    if (playUrls.length - 1 == currentLineIndex) {
-      liveStatus.value = false;
-    } else {
-      changePlayLine(currentLineIndex + 1);
-
-      //setPlayer();
+    // A deliberate pause or background playback must not start this watchdog.
+    if (_recovery.observeBuffering(now,
+        eligible: !isBackground && state.playing && state.buffering && !_recovery.busy)) {
+      _schedulePlaybackRecovery('缓冲时间过长');
     }
   }
 
-  int mediaErrorRetryCount = 0;
-  @override
-  void mediaError(String error) async {
-    if (_roomClosed || !_playlistReady) return;
-    final generation = _playTasks.current;
-    super.mediaEnd();
-    if (mediaErrorRetryCount < 2) {
-      Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
-        //延迟一秒再刷新
-        await Future.delayed(const Duration(seconds: 1));
-      }
-      if (!_playTasks.isCurrent(generation) || !_playlistReady) return;
-      mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
+  void _schedulePlaybackRecovery(String reason) {
+    if (_roomClosed || !_playlistReady || _recoveryFailed) return;
+    final mayRequest = _recovery.request(background: isBackground);
+    _recovering = true;
+    if (_recovery.busy) return;
+    _ensureRecoveryPlayIntent();
+    if (!mayRequest) return;
+    if (_recoveryOpenedPaused && !player.state.playing) return;
+    if (_recovery.exhausted) {
+      _showRecoveryFailed();
       return;
     }
+    if (_recoveryTimer != null) return;
+    _recoveryVerificationTimer?.cancel();
+    _recoveryVerificationTimer = null;
+    final roomGeneration = _roomTasks.current;
+    _recoveryTimer = Timer(_recovery.retryDelay(DateTime.now()), () {
+      _recoveryTimer = null;
+      if (_roomTasks.isCurrent(roomGeneration) && !isBackground) {
+        unawaited(_recoverPlayback(reason));
+      }
+    });
+  }
 
-    if (playUrls.length - 1 == currentLineIndex) {
-      errorMsg.value = "播放失败";
-      SmartDialog.showToast("播放失败:$error");
-    } else {
-      //currentLineIndex += 1;
-      //setPlayer();
-      changePlayLine(currentLineIndex + 1);
+  Future<void> _recoverPlayback(String reason) async {
+    if (_roomClosed || isBackground || detail.value == null || currentQuality < 0 || currentQuality >= qualities.length)
+      return;
+    final recoveryToken = _recovery.begin(DateTime.now());
+    if (recoveryToken == null) return;
+    final roomGeneration = _roomTasks.current;
+    final playGeneration = _playTasks.invalidate();
+    final selectedLine = currentLineIndex;
+    bool current() =>
+        !_roomClosed &&
+        !isBackground &&
+        _recovery.isCurrent(recoveryToken) &&
+        _isCurrentPlayRequest(playGeneration, roomGeneration);
+    var opened = false;
+    var openedPaused = false;
+    _failureDuringRecovery = false;
+    final playIntent = _ensureRecoveryPlayIntent();
+    addSysMsg('$reason，正在尝试恢复（${_recovery.attempts}/${PlaybackRecovery.maxAttempts}）');
+    try {
+      final result = await site.liveSite
+          .getPlayUrls(
+            detail: detail.value!,
+            quality: qualities[currentQuality],
+          )
+          .timeout(const Duration(seconds: 12));
+      if (!current()) return;
+      if (result.urls.isEmpty) throw StateError('未获取到可用播放地址');
+      playUrls.assignAll(result.urls);
+      playHeaders = result.headers;
+      currentLineIndex = recoveryLineIndex(selectedLine, playUrls.length, _recovery.attempts);
+      await initPlaylist(playGeneration, roomGeneration, shouldPlay: () {
+        // Stop observing before native open emits its own stop/play sequence.
+        _clearRecoveryPlayIntent();
+        final play = playIntent.beginOpen();
+        openedPaused = !play;
+        _recoveryOpenedPaused = openedPaused;
+        return play;
+      });
+      if (!current()) return;
+      opened = true;
+    } catch (e) {
+      if (current()) Log.logPrint(e);
+    } finally {
+      if (current()) {
+        _recovery.finish(recoveryToken, DateTime.now());
+        if (opened) {
+          // open() completion isn't playback success: errors emitted during
+          // single-flight recovery can be coalesced, so always verify progress.
+          _recoveryVerificationTimer = Timer(const Duration(seconds: 20), () {
+            _recoveryVerificationTimer = null;
+            if (!current() || !_recovering) return;
+            final state = player.state;
+            if (openedPaused && !state.playing) return;
+            // A paused player without an error must stay paused.
+            if (!_failureDuringRecovery && !state.playing && !state.completed && !state.buffering) return;
+            _schedulePlaybackRecovery('播放仍未恢复');
+          });
+        } else {
+          _schedulePlaybackRecovery('重新连接失败');
+        }
+      }
     }
+  }
+
+  void _showRecoveryFailed() {
+    if (_recoveryFailed) return;
+    _recoveryFailed = true;
+    _clearRecoveryPlayIntent();
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
+    _recoveryVerificationTimer?.cancel();
+    _recoveryVerificationTimer = null;
+    const message = '播放中断，自动恢复未成功，请手动刷新';
+    errorMsg.value = message;
+    addSysMsg(message);
+    SmartDialog.showToast(message);
+    // Connection failure alone is not proof that the broadcaster went offline.
+    super.mediaEnd();
   }
 
   /// 读取SC
@@ -904,6 +1045,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         groupValue: currentQuality,
         onChanged: (e) async {
           Get.back();
+          _resetPlaybackRecovery();
           currentQuality = e ?? 0;
           await getPlayUrl();
         },
@@ -1302,6 +1444,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
 
+    _resetPlaybackRecovery();
     final generation = _roomTasks.invalidate();
     _playTasks.invalidate();
     _playlistReady = false;
@@ -1320,6 +1463,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _stopDanmaku();
     danmakuBuffer.clear();
     messages.clear();
+    _chatBuffer.clear();
+    disableAutoScroll.value = false;
     superChats.clear();
     danmakuController?.clear();
     // 表情包是分房间下发的，换房间后上一个房间的合成位图没有复用价值
@@ -1362,6 +1507,12 @@ ${error?.stackTrace}''');
       //进入后台，关闭弹幕
       danmakuController?.clear();
       isBackground = true;
+      _recoveryTimer?.cancel();
+      _recoveryTimer = null;
+      _recoveryVerificationTimer?.cancel();
+      _recoveryVerificationTimer = null;
+      if (_recovery.busy) _playTasks.invalidate();
+      _recovery.cancel();
     } else
     //返回前台
     if (state == AppLifecycleState.resumed) {
@@ -1369,6 +1520,7 @@ ${error?.stackTrace}''');
       Log.d("返回前台");
       danmakuController?.resume();
       isBackground = false;
+      if (_recovery.pending && !_recoveryFailed) _schedulePlaybackRecovery('返回前台后恢复播放');
     }
   }
 
@@ -1404,6 +1556,8 @@ ${error?.stackTrace}''');
   @override
   void onClose() {
     _roomClosed = true;
+    _playbackMonitor?.cancel();
+    _resetPlaybackRecovery();
     _roomTasks.close();
     _playTasks.close();
     _playlistReady = false;
@@ -1424,7 +1578,22 @@ ${error?.stackTrace}''');
     // 直接退出直播间不经过 resetRoom，这里补一次：表情是分房间下发的，
     // 留在静态缓存里的源图句柄与合成位图出房间后就没有复用价值了。
     DanmakuEmoticonRenderer.clearCache();
-    rustDanmakuMask.dispose();
+    _chatBuffer.clear();
+    unawaited(_releaseDanmakuMask());
     super.onClose();
+  }
+
+  Future<void> _releaseDanmakuMask() async {
+    // Native owned disposal must not race a batch borrowing the same handle.
+    try {
+      await _maskInFlight;
+    } catch (_) {
+      // A failed batch still needs disposal.
+    }
+    try {
+      rustDanmakuMask.dispose();
+    } catch (e) {
+      Log.logPrint(e);
+    }
   }
 }
