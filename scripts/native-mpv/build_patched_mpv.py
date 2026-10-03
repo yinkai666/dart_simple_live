@@ -5,6 +5,7 @@ The resulting binary replaces the prepared Pod framework and has a matching
 dSYM/provenance manifest. Final app embedding is checked by a separate gate.
 """
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -78,6 +79,12 @@ def uuid_arm64(path):
     if len(matches) != 1:
         raise RuntimeError(f"Expected one arm64 UUID: {result}")
     return matches[0].lower()
+
+
+def native_overrides(pubspec, vendor_plugin):
+    overrides = copy.deepcopy(pubspec.get("dependency_overrides", {}))
+    overrides["media_kit_libs_ios_video"] = {"path": str(vendor_plugin)}
+    return {"dependency_overrides": overrides}
 
 
 def main():
@@ -197,9 +204,8 @@ def main():
         raise RuntimeError("Refusing to overwrite an existing pubspec_overrides.yaml")
     # pubspec_overrides replaces the whole dependency_overrides section. Keep
     # the GetX/material_ui fork and every other existing native dependency.
-    dependency_overrides = yaml.safe_load((app / "pubspec.yaml").read_text()).get("dependency_overrides", {})
-    dependency_overrides["media_kit_libs_ios_video"] = {"path": str(vendor_plugin)}
-    overrides.write_text(yaml.safe_dump({"dependency_overrides": dependency_overrides}, sort_keys=False))
+    pubspec = yaml.safe_load((app / "pubspec.yaml").read_text())
+    overrides.write_text(yaml.safe_dump(native_overrides(pubspec, vendor_plugin), sort_keys=False))
     # Bind CocoaPods to the local patched package, not a Pub git-cache copy that
     # Flutter may materialize again when it refreshes plugin dependencies.
     run(["flutter", "pub", "get"], cwd=app)
