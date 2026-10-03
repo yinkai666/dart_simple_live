@@ -139,6 +139,7 @@ def main():
     clang = output("xcrun", "--sdk", "iphoneos", "--find", "clang")
     clangpp = output("xcrun", "--sdk", "iphoneos", "--find", "clang++")
     flags = ["-arch", "arm64", "-isysroot", sdk, "-miphoneos-version-min=15.0"]
+    link_flags = flags + ["-Wl,-headerpad_max_install_names", "-framework", "OpenGLES", "-framework", "CoreVideo", "-framework", "CoreFoundation", "-framework", "AVFoundation"]
     cross = work / "ios-arm64.ini"
     cross.write_text("\n".join([
         "[host_machine]", "system = 'darwin'", "cpu_family = 'aarch64'", "cpu = 'arm64'", "endian = 'little'",
@@ -146,11 +147,11 @@ def main():
         f"ar = {output('xcrun', '--find', 'ar')!r}", f"strip = {output('xcrun', '--find', 'strip')!r}", "pkg-config = 'pkg-config'",
         "[properties]", "needs_exe_wrapper = true", f"pkg_config_libdir = {str(pc)!r}",
         "[built-in options]", f"c_args = {flags!r}", f"cpp_args = {flags!r}", f"objc_args = {flags!r}",
-        f"c_link_args = {flags + ['-Wl,-headerpad_max_install_names']!r}", f"objc_link_args = {flags!r}",
+        f"c_link_args = {link_flags!r}", f"objc_link_args = {link_flags!r}",
     ]) + "\n")
     env = dict(os.environ, PKG_CONFIG_PATH="", PKG_CONFIG_LIBDIR=str(pc))
     build = work / "build"
-    options = ["-Dauto_features=disabled", "-Dlibmpv=true", "-Dcplayer=false", "-Dgpl=false", "-Dbuild-date=false", "-Dtests=false", "-Db_ndebug=false", "-Diconv=enabled", "-Duchardet=enabled", "-Dzlib=enabled", "-Dgl=enabled", "-Dplain-gl=enabled", "-Daudiounit=enabled", "-Dios-gl=enabled"]
+    options = ["-Dauto_features=disabled", "-Dlibmpv=true", "-Dcplayer=false", "-Dgpl=false", "-Dbuild-date=false", "-Dtests=false", "-Db_ndebug=false", "-Db_lundef=true", "-Diconv=enabled", "-Duchardet=enabled", "-Dzlib=enabled", "-Dgl=enabled", "-Dplain-gl=enabled", "-Daudiounit=enabled", "-Dios-gl=enabled"]
     try:
         run(["meson", "setup", build, mpv, "--cross-file", cross, "--buildtype=debugoptimized", *options], env=env)
         run(["meson", "compile", "-C", build, "-j", str(min(os.cpu_count() or 4, 8))], env=env)
@@ -172,6 +173,10 @@ def main():
             raise RuntimeError(f"Host library leaked into iPad build: {dependency}")
     dsym = artifacts / "Mpv.framework.dSYM"
     run(["xcrun", "dsymutil", binary, "-o", dsym])
+    dwarf_files = list((dsym / "Contents/Resources/DWARF").iterdir())
+    if len(dwarf_files) != 1 or not dwarf_files[0].is_file():
+        raise RuntimeError("Expected one native DWARF image")
+    dwarf_files[0].rename(dsym / "Contents/Resources/DWARF/Mpv")
     binary_uuid = uuid_arm64(binary)
     dsym_uuid = uuid_arm64(dsym)
     if binary_uuid == original_uuid or binary_uuid != dsym_uuid:
