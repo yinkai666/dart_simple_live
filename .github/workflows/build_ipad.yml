@@ -56,7 +56,7 @@ jobs:
       - name: Prepare native mpv build tools
         run: |
           python3 -m venv "$RUNNER_TEMP/mpv-tools"
-          "$RUNNER_TEMP/mpv-tools/bin/python" -m pip install 'meson==1.8.5' 'ninja==1.13.0'
+          "$RUNNER_TEMP/mpv-tools/bin/python" -m pip install 'meson==1.8.5' 'ninja==1.13.0' 'PyYAML==6.0.2'
           echo "$RUNNER_TEMP/mpv-tools/bin" >> "$GITHUB_PATH"
           command -v pkg-config >/dev/null || brew install pkgconf
 

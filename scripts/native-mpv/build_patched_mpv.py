@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
+import yaml
 
 SOURCES = {
     "mpv": ("https://github.com/mpv-player/mpv/archive/refs/tags/v0.36.0.tar.gz", "29abc44f8ebee013bb2f9fe14d80b30db19b534c679056e4851ceadf5a5e8bf6"),
@@ -194,7 +195,11 @@ def main():
     overrides = app / "pubspec_overrides.yaml"
     if overrides.exists():
         raise RuntimeError("Refusing to overwrite an existing pubspec_overrides.yaml")
-    overrides.write_text("# Generated only for this isolated native-mpv build.\ndependency_overrides:\n  media_kit_libs_ios_video:\n    path: " + json.dumps(str(vendor_plugin)) + "\n")
+    # pubspec_overrides replaces the whole dependency_overrides section. Keep
+    # the GetX/material_ui fork and every other existing native dependency.
+    dependency_overrides = yaml.safe_load((app / "pubspec.yaml").read_text()).get("dependency_overrides", {})
+    dependency_overrides["media_kit_libs_ios_video"] = {"path": str(vendor_plugin)}
+    overrides.write_text(yaml.safe_dump({"dependency_overrides": dependency_overrides}, sort_keys=False))
     # Bind CocoaPods to the local patched package, not a Pub git-cache copy that
     # Flutter may materialize again when it refreshes plugin dependencies.
     run(["flutter", "pub", "get"], cwd=app)
