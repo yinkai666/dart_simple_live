@@ -5,7 +5,6 @@ The resulting binary replaces the prepared Pod framework and has a matching
 dSYM/provenance manifest. Final app embedding is checked by a separate gate.
 """
 import argparse
-import copy
 import hashlib
 import json
 import os
@@ -18,7 +17,6 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
-import yaml
 
 SOURCES = {
     "mpv": ("https://github.com/mpv-player/mpv/archive/refs/tags/v0.36.0.tar.gz", "29abc44f8ebee013bb2f9fe14d80b30db19b534c679056e4851ceadf5a5e8bf6"),
@@ -79,12 +77,6 @@ def uuid_arm64(path):
     if len(matches) != 1:
         raise RuntimeError(f"Expected one arm64 UUID: {result}")
     return matches[0].lower()
-
-
-def native_overrides(pubspec, vendor_plugin):
-    overrides = copy.deepcopy(pubspec.get("dependency_overrides", {}))
-    overrides["media_kit_libs_ios_video"] = {"path": str(vendor_plugin)}
-    return {"dependency_overrides": overrides}
 
 
 def main():
@@ -178,6 +170,8 @@ def main():
         raise RuntimeError(f"Unexpected libmpv outputs: {libraries}")
     binary = libraries[0]
     run(["xcrun", "install_name_tool", "-id", "@rpath/Mpv.framework/Mpv", binary])
+    if subprocess.run(["codesign", "-d", str(binary)], capture_output=True).returncode == 0:
+        run(["codesign", "--remove-signature", binary])
     links = output("xcrun", "otool", "-L", str(binary))
     (artifacts / "linked-libraries.txt").write_text(links)
     for line in links.splitlines()[1:]:
@@ -194,23 +188,9 @@ def main():
     dsym_uuid = uuid_arm64(dsym)
     if binary_uuid == original_uuid or binary_uuid != dsym_uuid:
         raise RuntimeError("Rebuilt binary/symbol UUID verification failed")
-    shutil.copyfile(binary, destination)
-    # CocoaPods invokes make again. Sources/frameworks have already been prepared
-    # and verified in this isolated job; prevent a later extraction undoing it.
-    podspec = ios / "media_kit_libs_ios_video.podspec"
-    podspec.write_text(podspec.read_text().replace('system("make")', '# Native frameworks prepared by Slive patched-mpv build'))
-    overrides = app / "pubspec_overrides.yaml"
-    if overrides.exists():
-        raise RuntimeError("Refusing to overwrite an existing pubspec_overrides.yaml")
-    # pubspec_overrides replaces the whole dependency_overrides section. Keep
-    # the GetX/material_ui fork and every other existing native dependency.
-    pubspec = yaml.safe_load((app / "pubspec.yaml").read_text())
-    overrides.write_text(yaml.safe_dump(native_overrides(pubspec, vendor_plugin), sort_keys=False))
-    # Bind CocoaPods to the local patched package, not a Pub git-cache copy that
-    # Flutter may materialize again when it refreshes plugin dependencies.
-    run(["flutter", "pub", "get"], cwd=app)
-    if plugin_path(app).resolve() != vendor_plugin.resolve():
-        raise RuntimeError("Flutter did not select the patched local native plugin")
+    # Keep the exact build product outside any Pod/Flutter cache. Install this
+    # ABI-compatible dynamic library after Xcode finishes assembling Runner.app.
+    shutil.copyfile(binary, artifacts / "Mpv")
     manifest = {
         "binary_uuid_arm64": binary_uuid, "dsym_uuid_arm64": dsym_uuid,
         "original_uuid_arm64": original_uuid, "binary_sha256": sha(binary), "patch_sha256": sha(patch),

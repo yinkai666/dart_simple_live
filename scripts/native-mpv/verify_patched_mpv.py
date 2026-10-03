@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import shutil
 import sys
 import uuid
 
@@ -67,6 +68,17 @@ def require_hash(path: Path, expected: str) -> str:
     return actual
 
 
+def install_verified_binary(manifest: dict, source: Path, binary: Path) -> None:
+    require_hash(source, manifest["binary_sha256"])
+    expected = {"arm64": normalized_uuid(manifest["binary_uuid_arm64"])}
+    original = {"arm64": normalized_uuid(manifest["original_uuid_arm64"])}
+    if read_uuids(source) != expected:
+        raise ValueError("Build product UUID does not match its manifest")
+    if read_uuids(binary) not in (original, expected):
+        raise ValueError("Refusing to replace an unexpected embedded native dependency")
+    shutil.copyfile(source, binary)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app-dir", type=Path, required=True, help="Flutter app directory")
@@ -74,6 +86,7 @@ def main() -> int:
     parser.add_argument("--dsym", type=Path, required=True, help="Rebuilt Mpv.framework.dSYM")
     parser.add_argument("--patch", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--install-from", type=Path, help="Verified native build product to install before IPA signing")
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     binary = args.app_dir / "build/ios/iphoneos/Runner.app/Frameworks/Mpv.framework/Mpv"
@@ -81,6 +94,8 @@ def main() -> int:
     if not binary.is_file() or not symbols.is_file():
         raise ValueError(f"Missing packaged mpv or dSYM: {binary}, {symbols}")
     patch_hash = require_hash(args.patch, manifest["patch_sha256"])
+    if args.install_from is not None:
+        install_verified_binary(manifest, args.install_from, binary)
     identifier = verify_identity(manifest, read_uuids(binary), read_uuids(symbols))
     # Codesigning or stripping may change the file hash while preserving LC_UUID.
     # Record the packaged bytes separately from the builder's binary_sha256.

@@ -14,7 +14,7 @@
 
 `build_patched_mpv.py` 在 macOS 上复用锁定的 0.6.8 iOS 依赖 frameworks，下载并校验匹配的 mpv/FFmpeg/libass/uchardet 源码头文件，仅重新编译 ARM64 iOS 的 libmpv。交叉编译限定 iPhoneOS SDK、iOS 15.0，隔离宿主机 pkg-config 库，保留调试信息并生成 dSYM。
 
-本次隔离 CI 将 iOS 原生插件复制到独立目录，准备依赖后替换其 `Mpv.framework`，停止 Podspec 再次调用 make，并通过临时 `pubspec_overrides.yaml` 指向该本地插件，避免 Pub 缓存重新物化旧库。`verify_patched_mpv.py` 在 IPA 打包前检查最终嵌入库、dSYM 和构建 manifest 的 UUID 一致，并校验当前补丁哈希；校验失败不能生成可交付 IPA。
+本次隔离 CI 将 iOS 原生插件复制到独立目录准备相同 ABI 的依赖，单独保存重建二进制。Xcode 完成应用组装后，`verify_patched_mpv.py --install-from` 先核对新二进制哈希、UUID 和应用内原库身份，再将新动态库放入尚未签名的 `Runner.app`。随后检查最终嵌入库、dSYM 和构建 manifest 的 UUID 一致，并校验补丁哈希。此步骤在 IPA 封装及用户侧载签名之前执行，避免 Pod/Flutter 构建过程重新嵌入旧缓存。校验失败不能生成可交付 IPA。
 
 `Slive-iPad-native-mpv-symbols` artifact 包含 dSYM、构建来源、链接依赖、补丁、配置与校验结果。原生崩溃定位应使用与安装包 UUID 对应的 dSYM。
 
