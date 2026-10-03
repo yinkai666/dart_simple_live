@@ -90,7 +90,12 @@ def main():
     artifacts = app / "build/native-mpv"
     artifacts.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="slive-mpv-", dir=os.getenv("RUNNER_TEMP")))
-    ios = plugin_path(app) / "ios"
+    upstream_plugin = plugin_path(app)
+    vendor_plugin = app / ".dart_tool/native-mpv-pod"
+    if vendor_plugin.exists():
+        raise RuntimeError("Native vendor directory already exists; use a fresh build workspace")
+    shutil.copytree(upstream_plugin, vendor_plugin, ignore=shutil.ignore_patterns(".git", "Frameworks", ".cache"))
+    ios = vendor_plugin / "ios"
     makefile = (ios / "Makefile").read_text()
     if "MPV_XCFRAMEWORKS_VERSION=0.6.8" not in makefile or BASE_SHA256 not in makefile:
         raise RuntimeError("Unexpected native dependency. Re-audit source/header ABI before rebuilding.")
@@ -186,11 +191,21 @@ def main():
     # and verified in this isolated job; prevent a later extraction undoing it.
     podspec = ios / "media_kit_libs_ios_video.podspec"
     podspec.write_text(podspec.read_text().replace('system("make")', '# Native frameworks prepared by Slive patched-mpv build'))
+    overrides = app / "pubspec_overrides.yaml"
+    if overrides.exists():
+        raise RuntimeError("Refusing to overwrite an existing pubspec_overrides.yaml")
+    overrides.write_text("# Generated only for this isolated native-mpv build.\ndependency_overrides:\n  media_kit_libs_ios_video:\n    path: " + json.dumps(str(vendor_plugin)) + "\n")
+    # Bind CocoaPods to the local patched package, not a Pub git-cache copy that
+    # Flutter may materialize again when it refreshes plugin dependencies.
+    run(["flutter", "pub", "get"], cwd=app)
+    if plugin_path(app).resolve() != vendor_plugin.resolve():
+        raise RuntimeError("Flutter did not select the patched local native plugin")
     manifest = {
         "binary_uuid_arm64": binary_uuid, "dsym_uuid_arm64": dsym_uuid,
         "original_uuid_arm64": original_uuid, "binary_sha256": sha(binary), "patch_sha256": sha(patch),
         "source_version": "mpv 0.36.0", "upstream_fix_commit": "d59f4fd3ec141693da4f7f6677aa729e1bb92f4d",
         "native_dependency_version": "0.6.8", "native_dependency_sha256": BASE_SHA256,
+        "plugin_path": str(vendor_plugin),
         "target": "arm64-apple-ios15.0", "sources": SOURCES, "toolchain": output("xcodebuild", "-version"),
     }
     (artifacts / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

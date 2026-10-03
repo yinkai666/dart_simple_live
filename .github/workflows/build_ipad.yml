@@ -64,7 +64,7 @@ jobs:
         run: python3 ../scripts/native-mpv/build_patched_mpv.py --app-dir .
 
       - name: Build iPad app
-        run: flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign --no-pub
 
       - name: Verify embedded patched mpv and symbols
         run: |
